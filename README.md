@@ -24,6 +24,8 @@ development platform; Windows builds come for free.
 ## What v0.1 can do
 
 - Perspective-correct **four-corner surfaces** with Quad, Ellipse or Triangle shape.
+- **Free Transform** (`Cmd+T`): scale, rotate and move one or many surfaces with a
+  bounding box, just like Photoshop (Shift = proportional / 15° steps, Alt = from center).
 - **Corner snapping** and **welded corners**: faces that share a corner move together,
   which makes mapping a cube easy. Hold Alt/Option to bypass either.
 - **Sources**: solid colors, seven animated GPU **patterns** (gradient, checker, stripes,
@@ -60,6 +62,7 @@ macOS bundles (built by GitHub Actions) and Windows.
 | --- | --- |
 | `Space` | Play / pause (hold and drag to pan) |
 | `Q` | Add quad |
+| `Cmd+T` | Free Transform (then `Enter` apply, `Esc` cancel) |
 | Click / Shift-click / Cmd-click | Select / add to selection |
 | Drag on empty canvas | Marquee select |
 | Arrows (`Shift` ×10) | Nudge selection, or the last clicked corner |

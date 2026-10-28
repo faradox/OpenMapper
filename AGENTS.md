@@ -47,11 +47,19 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs fmt, clippy with
 - Do not change system state (packages, services, global config). Hand the
   maintainer the commands instead. Editing files inside this repo is fine.
 - Do **not** drive the GUI on the maintainer's live desktop with xdotool or take
-  full-screen screenshots. It's a tiling WM with private windows. Only do
-  visual checks in an isolated X server (`Xvfb`, if installed) or ask the
-  maintainer to check.
-- If you launch the app for a smoke test, set `XDG_DATA_HOME` to a scratch dir
-  so it doesn't touch the real persisted state.
+  full-screen screenshots. It's a tiling WM with private windows. Use the isolated
+  Xvfb display instead (no GPU there, so force GL; no WM, so set focus explicitly):
+
+  ```sh
+  Xvfb :99 -screen 0 1600x1000x24 &
+  DISPLAY=:99 WGPU_BACKEND=gl XDG_DATA_HOME=/tmp/om-xdg cargo run &
+  W=$(DISPLAY=:99 xdotool search --name OpenMapper | head -1)
+  DISPLAY=:99 xdotool windowmove $W 0 0 windowsize $W 1600 1000 windowfocus --sync $W
+  DISPLAY=:99 import -window root shot.png      # then inspect the PNG
+  ```
+
+  Stop both processes afterwards. Always set `XDG_DATA_HOME` to a scratch dir so
+  smoke tests never touch the real persisted state.
 
 ## Library versions and API notes
 
@@ -105,6 +113,9 @@ read the source in `~/.cargo/registry/src/*/egui-0.37.0/` rather than going by m
   in `surface.wgsl`. The `shader_indices_are_stable` test guards existing indices.
 - **New animation parameter:** extend `Animation` and apply it in `anim::evaluate`,
   with a unit test.
+- **New canvas tool/mode:** follow Free Transform (`transform.rs`): pure math functions
+  with unit tests, state on `Editor`, `Drag` variants for its gestures, actions for
+  enter/apply/cancel, and apply it automatically when the selection changes.
 - **New panel or action:** add an `Action` variant, handle it in `run_action`, and wire
   the menu item, shortcut and button.
 

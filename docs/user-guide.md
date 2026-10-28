@@ -100,7 +100,22 @@ Each surface gets a slightly later time offset, so the motion ripples across the
   as it was on each surface.
 - Drag any selected surface to move them all. `Cmd+D` duplicates, `Delete` removes.
 
-## 7. Save
+## 7. Resize and rotate (Free Transform)
+
+Select one or more surfaces and press **`Cmd+T`** (or click **Transform** in the toolbar).
+Just like Photoshop, a box with eight handles appears around the selection:
+
+- Drag a **corner or side handle** to scale. Hold **Shift** to keep the proportions,
+  **Alt/Option** to scale from the center.
+- Drag **outside** the box to rotate. Hold **Shift** to rotate in 15° steps.
+- Drag **inside** the box to move. Arrow keys nudge.
+- The toolbar shows width, height and angle. Press **Enter** (or double-click inside,
+  or click **Apply**) to finish, or **Esc** / **Cancel** to put everything back.
+
+Several surfaces scale and rotate together as one group, so you can resize a whole
+mapped object at once.
+
+## 8. Save
 
 `Cmd+S` saves an `.omap` project. OpenMapper reopens your last project on launch.
 Keep images next to the project file if you want to move the project to another computer.

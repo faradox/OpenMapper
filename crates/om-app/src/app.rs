@@ -40,6 +40,7 @@ pub mod shortcuts {
     pub const ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::Minus);
     pub const OUTPUT: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::Enter);
     pub const ADD_QUAD: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Q);
+    pub const FREE_TRANSFORM: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::T);
 }
 
 /// Everything the user can trigger from menus, toolbar, panels or keys.
@@ -58,7 +59,9 @@ pub enum Action {
     Duplicate,
     Delete,
     Restack(i32),
-    RestackExtreme { front: bool },
+    RestackExtreme {
+        front: bool,
+    },
     AddSurface(Mask),
     Stagger,
     TogglePlay,
@@ -70,6 +73,10 @@ pub enum Action {
     AddSource(SourceKind),
     AddImages,
     Nudge(Vec2),
+    /// Cmd+T: start Free Transform, or apply it if already active.
+    FreeTransform,
+    ApplyTransform,
+    CancelTransform,
 }
 
 pub struct Transport {
@@ -172,6 +179,7 @@ impl OpenMapperApp {
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use shortcuts::*;
         let text_focus = ctx.egui_wants_keyboard_input();
+        let transforming = self.editor.transform.is_some();
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
             // Order matters: shortcuts with Shift must be checked first.
@@ -207,6 +215,7 @@ impl OpenMapperApp {
                 (ZOOM_IN, Action::ZoomBy(1.25)),
                 (ZOOM_OUT, Action::ZoomBy(0.8)),
                 (ADD_QUAD, Action::AddSurface(Mask::Quad)),
+                (FREE_TRANSFORM, Action::FreeTransform),
             ];
             for (sc, a) in table {
                 if i.consume_shortcut(sc) {
@@ -220,7 +229,10 @@ impl OpenMapperApp {
                 acts.push(Action::Delete);
             }
             if i.consume_key(Modifiers::NONE, Key::Escape) {
-                acts.push(Action::Deselect);
+                acts.push(if transforming { Action::CancelTransform } else { Action::Deselect });
+            }
+            if transforming && i.consume_key(Modifiers::NONE, Key::Enter) {
+                acts.push(Action::ApplyTransform);
             }
             let step = if i.modifiers.shift { 10.0 } else { 1.0 };
             for (key, dir) in [
@@ -256,6 +268,25 @@ impl OpenMapperApp {
     fn run_action(&mut self, ctx: &egui::Context, action: Action) {
         log::debug!("action: {action:?}");
         let sel = self.editor.selection.surfaces.clone();
+        // Anything that changes what exists or what is selected first applies
+        // a running Free Transform, like Photoshop does.
+        if self.editor.transform.is_some()
+            && matches!(
+                action,
+                Action::NewDemo
+                    | Action::NewEmpty
+                    | Action::Open
+                    | Action::Undo
+                    | Action::Redo
+                    | Action::SelectAll
+                    | Action::Deselect
+                    | Action::Duplicate
+                    | Action::Delete
+                    | Action::AddSurface(_)
+            )
+        {
+            self.editor.apply_transform();
+        }
         match action {
             Action::NewDemo | Action::NewEmpty => {
                 if self.confirm_discard() {
@@ -368,10 +399,23 @@ impl OpenMapperApp {
                 }
             }
             Action::Nudge(delta) => self.nudge(delta),
+            Action::FreeTransform => {
+                if self.editor.transform.is_some() {
+                    self.editor.apply_transform();
+                } else if !self.editor.begin_transform(&self.doc.project) {
+                    self.set_status("Select one or more unlocked surfaces to transform");
+                }
+            }
+            Action::ApplyTransform => self.editor.apply_transform(),
+            Action::CancelTransform => self.editor.cancel_transform(&mut self.doc.project),
         }
     }
 
     fn nudge(&mut self, delta: Vec2) {
+        if self.editor.transform.is_some() {
+            self.editor.nudge_transform(&mut self.doc.project, delta);
+            return;
+        }
         let project = &mut self.doc.project;
         if let Some((id, idx)) = self.editor.selection.corner {
             let Some(pos) = project.surface(id).map(|s| s.corners[idx]) else { return };

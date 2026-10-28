@@ -20,6 +20,15 @@ Decisions:
 - → docs/trackers/NNNN-....md
 ```
 
+## 2026-10-28: v0.1, first question
+
+- "How do I change the size of a shape?" Only corner dragging existed; no way to scale a
+  shape (or several) as a whole.
+
+Decisions:
+- Build Photoshop-style Free Transform next.
+  → [trackers/0002-free-transform.md](trackers/0002-free-transform.md)
+
 ## 2026-10-28: background (before v0.1)
 
 - Tried **MadMapper**: animation features not rich enough; specifically missed the

@@ -11,6 +11,11 @@ patterns, images), Fit/Span mapping, parametric texture animation (scroll, spin,
 zoom/opacity LFOs, presets, stagger), blend modes, feather, projector window, undo,
 save/load. Tracker: [trackers/0001-foundation.md](trackers/0001-foundation.md).
 
+## ✅ Free Transform (done)
+
+`Cmd+T` bounding box: scale (Shift proportional, Alt from center), rotate (Shift 15°),
+move, Enter/Esc. Tracker: [trackers/0002-free-transform.md](trackers/0002-free-transform.md).
+
 ## Next candidates (pick from feedback)
 
 ### Output & show workflow
@@ -39,7 +44,7 @@ save/load. Tracker: [trackers/0001-foundation.md](trackers/0001-foundation.md).
 - Polygon surfaces (n points), bezier masks.
 - Mesh warp (grid subdivision) for curved objects.
 - Groups (Photoshop-style layer folders) with group transforms.
-- Rotate/scale handles for the whole selection (free transform, `Cmd+T`).
+- Numeric entry in the Free Transform readout (type W/H/angle), Distort/Perspective modes.
 - Align and distribute.
 
 ### Effects

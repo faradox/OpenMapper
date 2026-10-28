@@ -9,6 +9,7 @@ mod editor;
 mod output;
 mod panels;
 mod theme;
+mod transform;
 mod widgets;
 
 fn main() -> eframe::Result {

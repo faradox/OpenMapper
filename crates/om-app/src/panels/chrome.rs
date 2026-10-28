@@ -77,6 +77,11 @@ pub fn menu_bar(ui: &mut Ui, app: &mut OpenMapperApp) {
                     app.act(Action::AddSurface(Mask::Triangle));
                 }
                 ui.separator();
+                let label = if app.editor.transform.is_some() { "Apply Transform" } else { "Free Transform" };
+                if item(ui, label, Some(&shortcuts::FREE_TRANSFORM), has_sel) {
+                    app.act(Action::FreeTransform);
+                }
+                ui.separator();
                 if item(ui, "Bring to Front", Some(&shortcuts::TO_FRONT), has_sel) {
                     app.act(Action::RestackExtreme { front: true });
                 }
@@ -144,6 +149,37 @@ pub fn toolbar(ui: &mut Ui, app: &mut OpenMapperApp) {
             }
             if ui.button("△ Triangle").clicked() {
                 app.act(Action::AddSurface(Mask::Triangle));
+            }
+            ui.separator();
+
+            if let Some(tf) = &app.editor.transform {
+                let (scale, angle) = tf.readout();
+                ui.label(RichText::new("Transform").strong());
+                ui.monospace(format!(
+                    "W {:>4.0}%  H {:>4.0}%  ∠ {:>6.1}°",
+                    scale.x * 100.0,
+                    scale.y * 100.0,
+                    angle
+                ));
+                if ui
+                    .add(Button::new(RichText::new("Apply").color(theme::ACCENT)))
+                    .on_hover_text("Enter")
+                    .clicked()
+                {
+                    app.act(Action::ApplyTransform);
+                }
+                if ui.button("Cancel").on_hover_text("Esc").clicked() {
+                    app.act(Action::CancelTransform);
+                }
+            } else {
+                let has_sel = !app.editor.selection.surfaces.is_empty();
+                if ui
+                    .add_enabled(has_sel, Button::new("⬚ Transform"))
+                    .on_hover_text("Free Transform: scale and rotate the selection (Cmd+T)")
+                    .clicked()
+                {
+                    app.act(Action::FreeTransform);
+                }
             }
             ui.separator();
 

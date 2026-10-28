@@ -10,18 +10,24 @@
 //! - Corners and moves snap to other surfaces' corners and the canvas corners
 //!   (hold Alt/Option to disable snapping).
 //! - Space-drag or middle-drag pans; scroll pans; pinch / Cmd+scroll zooms.
+//! - Free Transform (Cmd+T) replaces the corner handles with a bounding box:
+//!   handles scale (Shift proportional, Alt from center), dragging outside
+//!   rotates (Shift snaps to 15°), dragging inside moves. See `transform.rs`.
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2 as EVec2};
-use glam::Vec2;
+use glam::{Affine2, Vec2};
 use om_core::geom::{point_in_polygon, quad_center};
 use om_core::{Project, SurfaceId};
 
 use crate::theme;
+use crate::transform::{self, FreeTransform, HANDLES, Handle};
 
 const HANDLE_RADIUS: f32 = 6.0;
 const SNAP_DISTANCE_PX: f32 = 10.0;
 /// Corners closer than this (canvas px) count as welded.
 const WELD_EPSILON: f32 = 0.5;
+/// Screen-space grab radius of free-transform handles.
+const TF_HANDLE_GRAB: f32 = 9.0;
 
 #[derive(Default)]
 pub struct Selection {
@@ -75,6 +81,9 @@ enum Drag {
     Move { origin: Vec2, start: Vec<(SurfaceId, [Vec2; 4])> },
     Corner { origin: Vec2, targets: Vec<(SurfaceId, usize, Vec2)> },
     Marquee { start: Pos2, base: Vec<SurfaceId> },
+    TfScale { start: Affine2, handle: Handle },
+    TfRotate { start: Affine2, from: Vec2 },
+    TfMove { start: Affine2, from: Vec2 },
 }
 
 pub struct Editor {
@@ -90,6 +99,8 @@ pub struct Editor {
     /// Space was used for panning during the current press (so releasing it
     /// should not toggle playback).
     pub space_panned: bool,
+    /// Active Free Transform session, if any.
+    pub transform: Option<FreeTransform>,
     last_rect: Rect,
 }
 
@@ -105,6 +116,7 @@ impl Default for Editor {
             snapping: true,
             show_outlines: true,
             space_panned: false,
+            transform: None,
             last_rect: Rect::NOTHING,
         }
     }
@@ -131,6 +143,33 @@ impl ViewXf {
 impl Editor {
     pub fn is_interacting(&self) -> bool {
         !matches!(self.drag, Drag::None)
+    }
+
+    /// Starts Free Transform on the selection. Returns false if there is
+    /// nothing (unlocked) to transform.
+    pub fn begin_transform(&mut self, project: &Project) -> bool {
+        self.transform = FreeTransform::begin(project, &self.selection.surfaces);
+        self.selection.corner = None;
+        self.transform.is_some()
+    }
+
+    /// Keeps the transformed geometry and leaves transform mode.
+    pub fn apply_transform(&mut self) {
+        self.transform = None;
+    }
+
+    /// Restores the geometry from before Cmd+T and leaves transform mode.
+    pub fn cancel_transform(&mut self, project: &mut Project) {
+        if let Some(tf) = self.transform.take() {
+            tf.restore(project);
+        }
+    }
+
+    pub fn nudge_transform(&mut self, project: &mut Project, delta: Vec2) {
+        if let Some(tf) = &mut self.transform {
+            tf.xf = transform::moved(tf.xf, delta);
+            tf.apply(project);
+        }
     }
 
     pub fn fit(&mut self) {
@@ -174,12 +213,13 @@ impl Editor {
         }
 
         // ---- Navigation (scroll / pinch / space / middle mouse) ----------
-        let (scroll, zoom_delta, space, alt, toggle_mod, hover) = ui.input(|i| {
+        let (scroll, zoom_delta, space, alt, shift, toggle_mod, hover) = ui.input(|i| {
             (
                 i.smooth_scroll_delta(),
                 i.zoom_delta(),
                 i.key_down(Key::Space),
                 i.modifiers.alt,
+                i.modifiers.shift,
                 i.modifiers.shift || i.modifiers.command,
                 i.pointer.hover_pos(),
             )
@@ -204,6 +244,11 @@ impl Editor {
         let snap = self.snapping && !alt;
         let snap_dist = SNAP_DISTANCE_PX / self.zoom;
 
+        // Selecting something else (e.g. in the Layers panel) applies the transform.
+        if self.transform.as_ref().is_some_and(|tf| tf.ids != self.selection.surfaces) {
+            self.transform = None;
+        }
+
         if resp.drag_started() {
             let start = press_origin.unwrap_or(rect.center());
             let middle = resp.dragged_by(egui::PointerButton::Middle);
@@ -211,6 +256,15 @@ impl Editor {
                 self.drag = Drag::Pan { start_pan: self.pan };
                 self.space_panned |= space;
                 self.auto_fit = false;
+            } else if let Some(tf) = &self.transform {
+                let p = xf.to_canvas(start);
+                self.drag = if let Some(handle) = hit_tf_handle(tf, &xf, start) {
+                    Drag::TfScale { start: tf.xf, handle }
+                } else if tf.contains(p) {
+                    Drag::TfMove { start: tf.xf, from: p }
+                } else {
+                    Drag::TfRotate { start: tf.xf, from: p }
+                };
             } else if let Some((id, idx)) = self.hit_corner(project, &xf, start) {
                 let origin = project.surface(id).map(|s| s.corners[idx]).unwrap_or_default();
                 let mut targets = vec![(id, idx, origin)];
@@ -258,20 +312,8 @@ impl Editor {
                         if snap {
                             let moving: Vec<SurfaceId> = start.iter().map(|(id, _)| *id).collect();
                             let candidates = snap_candidates(project, &moving, None);
-                            let mut best: Option<(f32, Vec2)> = None;
-                            for (_, corners) in start.iter() {
-                                for c in corners {
-                                    let moved = *c + delta;
-                                    if let Some((d, target)) = nearest(&candidates, moved, snap_dist)
-                                        && best.is_none_or(|(bd, _)| d < bd)
-                                    {
-                                        best = Some((d, target - moved));
-                                    }
-                                }
-                            }
-                            if let Some((_, adjust)) = best {
-                                delta += adjust;
-                            }
+                            let corners = start.iter().flat_map(|(_, c)| c.iter().map(|c| *c + delta));
+                            delta += snap_adjustment(&candidates, corners, snap_dist);
                         }
                         for (id, corners) in start.iter() {
                             if let Some(s) = project.surface_mut(*id) {
@@ -317,6 +359,31 @@ impl Editor {
                         self.selection.set(ids);
                     }
                 }
+                Drag::TfScale { start, handle } => {
+                    if let (Some(tf), Some(p)) = (&mut self.transform, pointer) {
+                        tf.xf = transform::scaled(*start, tf.bounds(), *handle, xf.to_canvas(p), shift, alt);
+                        tf.apply(project);
+                    }
+                }
+                Drag::TfRotate { start, from } => {
+                    if let (Some(tf), Some(p)) = (&mut self.transform, pointer) {
+                        let pivot = start.transform_point2((tf.bounds().0 + tf.bounds().1) * 0.5);
+                        tf.xf = transform::rotated(*start, pivot, *from, xf.to_canvas(p), shift);
+                        tf.apply(project);
+                    }
+                }
+                Drag::TfMove { start, from } => {
+                    if let (Some(tf), Some(p)) = (&mut self.transform, pointer) {
+                        let mut delta = xf.to_canvas(p) - *from;
+                        if snap {
+                            let candidates = snap_candidates(project, &tf.surface_ids(), None);
+                            let corners = tf.corners_under(transform::moved(*start, delta));
+                            delta += snap_adjustment(&candidates, corners, snap_dist);
+                        }
+                        tf.xf = transform::moved(*start, delta);
+                        tf.apply(project);
+                    }
+                }
                 Drag::None => {}
             }
         }
@@ -325,7 +392,15 @@ impl Editor {
             self.drag = Drag::None;
         }
 
-        if resp.clicked() {
+        if let Some(tf) = &self.transform {
+            // In transform mode clicks don't change the selection;
+            // double-clicking inside the box applies (like Photoshop).
+            if resp.double_clicked()
+                && resp.interact_pointer_pos().is_some_and(|p| tf.contains(xf.to_canvas(p)))
+            {
+                self.transform = None;
+            }
+        } else if resp.clicked() {
             let p = resp.interact_pointer_pos().unwrap_or(rect.center());
             if let Some((id, idx)) = self.hit_corner(project, &xf, p) {
                 self.selection.corner = Some((id, idx));
@@ -346,6 +421,8 @@ impl Editor {
                 egui::CursorIcon::Grabbing
             } else if space {
                 egui::CursorIcon::Grab
+            } else if let Some(tf) = &self.transform {
+                tf_cursor(tf, &xf, &self.drag, hp)
             } else if matches!(self.drag, Drag::Corner { .. }) || self.hit_corner(project, &xf, hp).is_some()
             {
                 egui::CursorIcon::Crosshair
@@ -370,7 +447,19 @@ impl Editor {
         painter.rect_stroke(canvas_rect, 0.0, Stroke::new(1.0, Color32::from_gray(90)), StrokeKind::Outside);
 
         let hovered = hover.filter(|p| rect.contains(*p)).and_then(|p| hit_surface(project, xf.to_canvas(p)));
-        draw_overlays(&painter, project, &xf, &self.selection, hovered, self.show_outlines, true);
+        let in_transform = self.transform.is_some();
+        draw_overlays(&painter, project, &xf, &self.selection, hovered, self.show_outlines, !in_transform);
+        if let Some(tf) = &self.transform {
+            draw_transform_box(&painter, tf, &xf);
+            painter.text(
+                rect.left_top() + EVec2::new(10.0, 8.0),
+                egui::Align2::LEFT_TOP,
+                "Free Transform: drag handles to scale (Shift: keep proportions, Alt: from center) · \
+                 drag outside to rotate (Shift: 15° steps) · Enter applies, Esc cancels",
+                egui::FontId::proportional(12.0),
+                Color32::from_gray(200),
+            );
+        }
 
         if let (Drag::Marquee { start, .. }, Some(p)) = (&self.drag, pointer) {
             let r = Rect::from_two_pos(*start, p);
@@ -392,6 +481,67 @@ impl Editor {
         }
         best.map(|(_, id, i)| (id, i))
     }
+}
+
+fn hit_tf_handle(tf: &FreeTransform, xf: &ViewXf, p: Pos2) -> Option<Handle> {
+    HANDLES
+        .iter()
+        .map(|h| (xf.to_screen(tf.handle_pos(*h)).distance(p), *h))
+        .filter(|(d, _)| *d <= TF_HANDLE_GRAB)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, h)| h)
+}
+
+/// Resize cursor matching the on-screen direction of a (possibly rotated) handle.
+fn tf_cursor(tf: &FreeTransform, xf: &ViewXf, drag: &Drag, hover: Pos2) -> egui::CursorIcon {
+    use egui::CursorIcon as C;
+    let handle = match drag {
+        Drag::TfScale { handle, .. } => Some(*handle),
+        Drag::TfMove { .. } => return C::Move,
+        Drag::TfRotate { .. } => return C::Crosshair,
+        _ => hit_tf_handle(tf, xf, hover),
+    };
+    match handle {
+        Some(h) => {
+            let dir = tf.handle_pos(h) - tf.center();
+            match dir.y.atan2(dir.x).to_degrees().rem_euclid(180.0) {
+                a if !(22.5..157.5).contains(&a) => C::ResizeHorizontal,
+                a if a < 67.5 => C::ResizeNwSe,
+                a if a < 112.5 => C::ResizeVertical,
+                _ => C::ResizeNeSw,
+            }
+        }
+        None if tf.contains(xf.to_canvas(hover)) => C::Move,
+        None => C::Crosshair,
+    }
+}
+
+fn draw_transform_box(painter: &egui::Painter, tf: &FreeTransform, xf: &ViewXf) {
+    let outline: Vec<Pos2> = tf.outline().iter().map(|p| xf.to_screen(*p)).collect();
+    painter.add(Shape::closed_line(outline, Stroke::new(1.0, Color32::WHITE)));
+    for h in HANDLES {
+        let r = Rect::from_center_size(xf.to_screen(tf.handle_pos(h)), EVec2::splat(8.0));
+        painter.rect_filled(r, 0.0, Color32::WHITE);
+        painter.rect_stroke(r, 0.0, Stroke::new(1.0, theme::ACCENT), StrokeKind::Inside);
+    }
+    let c = xf.to_screen(tf.center());
+    let s = Stroke::new(1.0, Color32::WHITE);
+    painter.line_segment([c - EVec2::new(5.0, 0.0), c + EVec2::new(5.0, 0.0)], s);
+    painter.line_segment([c - EVec2::new(0.0, 5.0), c + EVec2::new(0.0, 5.0)], s);
+}
+
+/// Smallest correction that makes one of the moving `corners` land on a
+/// snap candidate (zero if none is close enough).
+fn snap_adjustment(candidates: &[Vec2], corners: impl Iterator<Item = Vec2>, max: f32) -> Vec2 {
+    let mut best: Option<(f32, Vec2)> = None;
+    for c in corners {
+        if let Some((d, target)) = nearest(candidates, c, max)
+            && best.is_none_or(|(bd, _)| d < bd)
+        {
+            best = Some((d, target - c));
+        }
+    }
+    best.map_or(Vec2::ZERO, |(_, adjust)| adjust)
 }
 
 /// Front-most visible, unlocked surface under a canvas point.
