@@ -622,10 +622,19 @@ pub fn draw_overlays(
             Stroke::new(1.5, theme::ACCENT)
         } else if hovered == Some(s.id) {
             Stroke::new(1.5, theme::ACCENT_SOFT)
+        } else if s.cutout {
+            Stroke::new(1.0, theme::CUTOUT)
         } else {
             Stroke::new(1.0, theme::OUTLINE)
         };
-        painter.add(Shape::closed_line(pts.clone(), stroke));
+        if s.cutout {
+            // Dashed, like a selection marquee: it removes, it doesn't draw.
+            let mut closed = pts.clone();
+            closed.push(pts[0]);
+            painter.extend(Shape::dashed_line(&closed, stroke, 6.0, 4.0));
+        } else {
+            painter.add(Shape::closed_line(pts.clone(), stroke));
+        }
 
         if show_outlines {
             let label_pos = pts[0] + EVec2::new(6.0, 4.0);

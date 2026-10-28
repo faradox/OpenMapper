@@ -16,6 +16,12 @@ save/load. Tracker: [trackers/0001-foundation.md](trackers/0001-foundation.md).
 `Cmd+T` bounding box: scale (Shift proportional, Alt from center), rotate (Shift 15°),
 move, Enter/Esc. Tracker: [trackers/0002-free-transform.md](trackers/0002-free-transform.md).
 
+## ✅ v0.2: Cutouts, video, working dialogs (done)
+
+Cutout surfaces, H.264 video sources (MP4/MOV), async file dialogs (fixes Save /
+Save As / Import), in-app save prompts. Tracker:
+[trackers/0003-cutouts-video-dialogs.md](trackers/0003-cutouts-video-dialogs.md).
+
 ## Next candidates (pick from feedback)
 
 ### Output & show workflow
@@ -25,8 +31,10 @@ move, Enter/Esc. Tracker: [trackers/0002-free-transform.md](trackers/0002-free-t
 - Syphon (macOS) / Spout (Windows) / NDI output and input.
 
 ### Media
-- **Video playback** (AVFoundation on macOS via a decoder thread; ffmpeg elsewhere),
-  loop/ping-pong, per-surface playback speed.
+- **Video, next steps**: AVFoundation backend on macOS (HEVC, ProRes, hardware decode),
+  HAP, playback speed / in-out points / ping-pong per source, GPU YUV conversion,
+  thumbnails. Audio.
+- **Cutout options**: invert (show only inside), cut only specific layers, groups.
 - GIF animation, image sequences.
 - Live camera input.
 - Mipmaps for images (smooth minification).

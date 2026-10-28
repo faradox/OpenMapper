@@ -20,6 +20,25 @@ Decisions:
 - → docs/trackers/NNNN-....md
 ```
 
+## 2026-10-28: v0.1 + Free Transform, first hands-on session
+
+Pain points / wishes (in her words where possible):
+- "Mask -> Cutout from other shapes"
+- "Save + Save as + Import image are not working right now"
+- "Needs import video (mp4)"
+
+Findings:
+- Save/Import: all file dialogs were blocking rfd dialogs called inside winit's event
+  handler. On macOS that nested modal loop can re-enter winit, which treats it as fatal.
+  On the Linux dev box, rfd's default backend needs xdg-desktop-portal or zenity
+  (neither installed), so dialogs failed silently.
+
+Decisions:
+- Cutouts as a surface flag ("cut out of layers below"), ordered by the layer stack.
+- Async file dialogs + in-app prompts on every platform; GTK3 dialogs on Linux.
+- H.264 video via OpenH264 (cross-platform, testable on Linux); AVFoundation later.
+  → [trackers/0003-cutouts-video-dialogs.md](trackers/0003-cutouts-video-dialogs.md)
+
 ## 2026-10-28: v0.1, first question
 
 - "How do I change the size of a shape?" Only corner dragging existed; no way to scale a

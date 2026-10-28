@@ -107,19 +107,29 @@ fn surface_props(ui: &mut Ui, app: &mut OpenMapperApp, s: &mut Surface, count: u
             });
             ui.end_row();
 
-            prop_label(ui, "Source", "What is shown on the surface");
-            let current = s
-                .source
-                .and_then(|id| app.doc.project.source(id))
-                .map(|src| src.name.clone())
-                .unwrap_or_else(|| "None".into());
-            egui::ComboBox::from_id_salt("source").selected_text(current).show_ui(ui, |ui| {
-                ui.selectable_value(&mut s.source, None, "None");
-                for src in &app.doc.project.sources {
-                    ui.selectable_value(&mut s.source, Some(src.id), &src.name);
-                }
-            });
+            prop_label(
+                ui,
+                "Cutout",
+                "Cut a hole in every surface below this one.\nMove it in Layers to choose what it cuts.",
+            );
+            ui.checkbox(&mut s.cutout, "Cut out of layers below");
             ui.end_row();
+
+            if !s.cutout {
+                prop_label(ui, "Source", "What is shown on the surface");
+                let current = s
+                    .source
+                    .and_then(|id| app.doc.project.source(id))
+                    .map(|src| src.name.clone())
+                    .unwrap_or_else(|| "None".into());
+                egui::ComboBox::from_id_salt("source").selected_text(current).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut s.source, None, "None");
+                    for src in &app.doc.project.sources {
+                        ui.selectable_value(&mut s.source, Some(src.id), &src.name);
+                    }
+                });
+                ui.end_row();
+            }
 
             prop_label(ui, "", "");
             ui.horizontal(|ui| {
@@ -136,17 +146,20 @@ fn surface_props(ui: &mut Ui, app: &mut OpenMapperApp, s: &mut Surface, count: u
             ui.add(Slider::new(&mut s.opacity, 0.0..=1.0));
             ui.end_row();
 
-            prop_label(ui, "Tint", "Multiplies the source colors");
-            color_edit(ui, &mut s.tint);
-            ui.end_row();
+            // A cutout has no colors of its own: tint and blend don't apply.
+            if !s.cutout {
+                prop_label(ui, "Tint", "Multiplies the source colors");
+                color_edit(ui, &mut s.tint);
+                ui.end_row();
 
-            prop_label(ui, "Blend", "How this surface combines with the ones behind it");
-            egui::ComboBox::from_id_salt("blend").selected_text(s.blend.label()).show_ui(ui, |ui| {
-                for b in BlendMode::ALL {
-                    ui.selectable_value(&mut s.blend, b, b.label());
-                }
-            });
-            ui.end_row();
+                prop_label(ui, "Blend", "How this surface combines with the ones behind it");
+                egui::ComboBox::from_id_salt("blend").selected_text(s.blend.label()).show_ui(ui, |ui| {
+                    for b in BlendMode::ALL {
+                        ui.selectable_value(&mut s.blend, b, b.label());
+                    }
+                });
+                ui.end_row();
+            }
 
             prop_label(ui, "Feather", "Soft edges");
             ui.add(Slider::new(&mut s.feather, 0.0..=0.5));
@@ -154,42 +167,44 @@ fn surface_props(ui: &mut Ui, app: &mut OpenMapperApp, s: &mut Surface, count: u
         });
     });
 
-    section(ui, "Texture", |ui| {
-        grid(ui, "texture_props", |ui| {
-            prop_label(
-                ui,
-                "Mapping",
-                "Fit: whole texture on each surface.\nSpan: one texture across the canvas, revealed by surfaces.",
-            );
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut s.mapping, Mapping::Surface, "Fit");
-                ui.selectable_value(&mut s.mapping, Mapping::Canvas, "Span");
+    if !s.cutout {
+        section(ui, "Texture", |ui| {
+            grid(ui, "texture_props", |ui| {
+                prop_label(
+                    ui,
+                    "Mapping",
+                    "Fit: whole texture on each surface.\nSpan: one texture across the canvas, revealed by surfaces.",
+                );
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut s.mapping, Mapping::Surface, "Fit");
+                    ui.selectable_value(&mut s.mapping, Mapping::Canvas, "Span");
+                });
+                ui.end_row();
+
+                prop_label(ui, "Offset", "");
+                vec2_drag(ui, &mut s.texture.offset, 0.005, "");
+                ui.end_row();
+
+                prop_label(ui, "Scale", "");
+                vec2_drag(ui, &mut s.texture.scale, 0.005, "");
+                ui.end_row();
+
+                prop_label(ui, "Rotation", "");
+                ui.add(Slider::new(&mut s.texture.rotation, -180.0..=180.0).suffix("°"));
+                ui.end_row();
+
+                prop_label(ui, "Flip", "");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut s.texture.flip_x, "Horizontal");
+                    ui.checkbox(&mut s.texture.flip_y, "Vertical");
+                });
+                ui.end_row();
             });
-            ui.end_row();
-
-            prop_label(ui, "Offset", "");
-            vec2_drag(ui, &mut s.texture.offset, 0.005, "");
-            ui.end_row();
-
-            prop_label(ui, "Scale", "");
-            vec2_drag(ui, &mut s.texture.scale, 0.005, "");
-            ui.end_row();
-
-            prop_label(ui, "Rotation", "");
-            ui.add(Slider::new(&mut s.texture.rotation, -180.0..=180.0).suffix("°"));
-            ui.end_row();
-
-            prop_label(ui, "Flip", "");
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut s.texture.flip_x, "Horizontal");
-                ui.checkbox(&mut s.texture.flip_y, "Vertical");
-            });
-            ui.end_row();
+            if ui.small_button("Reset texture").clicked() {
+                s.texture = Default::default();
+            }
         });
-        if ui.small_button("Reset texture").clicked() {
-            s.texture = Default::default();
-        }
-    });
+    }
 
     section(ui, "Animate", |ui| animation_props(ui, app, s, count));
 

@@ -71,14 +71,19 @@ pub fn layers_panel(ui: &mut Ui, app: &mut OpenMapperApp) {
                 if selected {
                     text = text.color(egui::Color32::WHITE);
                 }
-                let hint = RichText::new(s.mask.label()).small().weak();
+                let kind = if s.cutout { "✂ Cutout" } else { s.mask.label() };
+                let hint = RichText::new(kind).small().weak();
                 let label = ui.add(
                     Button::selectable(selected, text)
                         .right_text(hint)
                         .truncate()
                         .min_size(egui::vec2(ui.available_width() - 4.0, 0.0)),
                 );
-                label.on_hover_text(format!("{} · {}", s.mask.label(), source_name))
+                if s.cutout {
+                    label.on_hover_text(format!("{} cutout: hides the layers below it", s.mask.label()))
+                } else {
+                    label.on_hover_text(format!("{} · {}", s.mask.label(), source_name))
+                }
             });
             let resp = row.inner;
             if resp.clicked() {

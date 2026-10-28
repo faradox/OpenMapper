@@ -22,7 +22,8 @@ this first, then [docs/architecture.md](docs/architecture.md).
 | Crate | Purpose | May depend on |
 | --- | --- | --- |
 | `om-core` | Document model (`Project`, `Surface`, `Source`), perspective math, animation evaluation, undo history, multi-edit diff. Pure Rust, no GPU/UI. | glam, serde |
-| `om-render` | wgpu compositor. Renders a `Project` at time *t* into one `Rgba8Unorm` texture. WGSL in `surface.wgsl`. | om-core, wgpu |
+| `om-media` | Video decoding: MP4 demux (`mp4`) + H.264 (`openh264`, built from source) on a thread per video. No GPU/UI. | mp4, openh264 |
+| `om-render` | wgpu compositor. Renders a `Project` at time *t* into one `Rgba8Unorm` texture. WGSL in `surface.wgsl`. Uploads video frames. | om-core, om-media, wgpu |
 | `om-app` | Binary `openmapper`. eframe/egui UI, canvas editor, projector window, file I/O dialogs. | everything |
 
 Keep logic that can be tested without a window in `om-core` (or in plain functions
@@ -59,7 +60,9 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs fmt, clippy with
   ```
 
   Stop both processes afterwards. Always set `XDG_DATA_HOME` to a scratch dir so
-  smoke tests never touch the real persisted state.
+  smoke tests never touch the real persisted state. To start with a prepared scene,
+  pass a project path: `openmapper /tmp/scene.omap`. File dialogs are GTK on Linux
+  and work in Xvfb (focus the dialog window by its title, type a full path, Enter).
 
 ## Library versions and API notes
 
@@ -76,6 +79,11 @@ read the source in `~/.cargo/registry/src/*/egui-0.37.0/` rather than going by m
   `multiview_mask` on pipelines and render passes, `depth_slice` on color attachments.
 - Always take `wgpu` from the workspace (must match `egui-wgpu`'s version).
 - egui native textures must be `Rgba8Unorm` (that's why the output texture is).
+- **Never call blocking dialogs** (`rfd::FileDialog`, `rfd::MessageDialog`) from the UI.
+  On macOS they run a nested event loop inside winit's handler, which winit treats as
+  fatal re-entrancy. Use `dialogs::FileDialogs::start` (async rfd, result polled per frame)
+  and `Prompt` (egui modal) instead. rfd uses its GTK3 backend on Linux, so dialogs work
+  without xdg-desktop-portal or zenity.
 
 ## Core design rules
 
@@ -111,6 +119,9 @@ read the source in `~/.cargo/registry/src/*/egui-0.37.0/` rather than going by m
 - **New generator pattern:** add a variant to `Pattern` (and to `Pattern::ALL`, at the
   end, because the shader index is the position), then add a `case` in `generator()`
   in `surface.wgsl`. The `shader_indices_are_stable` test guards existing indices.
+- **New media type:** add a `SourceKind` variant (with `media_path()` if file-based),
+  load it in `om_render::textures::TextureCache::sync`, accept its extension in
+  `OpenMapperApp::import_media`. Decoding that takes time belongs on a thread in `om-media`.
 - **New animation parameter:** extend `Animation` and apply it in `anim::evaluate`,
   with a unit test.
 - **New canvas tool/mode:** follow Free Transform (`transform.rs`): pure math functions

@@ -9,6 +9,8 @@ pub const WORKSPACE_BG: Color32 = Color32::from_rgb(30, 30, 30);
 pub const PANEL_BG: Color32 = Color32::from_rgb(50, 50, 50);
 pub const OUTLINE: Color32 = Color32::from_rgba_premultiplied(150, 150, 150, 150);
 pub const WARN: Color32 = Color32::from_rgb(240, 170, 60);
+/// Outline of cutout surfaces.
+pub const CUTOUT: Color32 = Color32::from_rgb(235, 110, 150);
 
 pub fn apply(ctx: &egui::Context) {
     let mut v = Visuals::dark();

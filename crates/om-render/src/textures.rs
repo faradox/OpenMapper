@@ -1,24 +1,39 @@
-//! GPU textures for image sources, plus a 1x1 white fallback used by
-//! solid and generator sources (the shader always samples *something*).
+//! GPU textures for image and video sources, plus a 1x1 white fallback used
+//! by solid and generator sources (the shader always samples *something*)
+//! and a black one for media that failed to load (no glaring white on the wall).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use om_core::{Project, SourceId, SourceKind};
+use om_media::{VideoInfo, VideoPlayer};
+
+/// Called from decoder threads when a new video frame is ready.
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
 struct Entry {
     path: PathBuf,
+    is_video: bool,
     /// `None` when loading failed; the error is kept in `errors`.
-    bind_group: Option<wgpu::BindGroup>,
+    gpu: Option<Gpu>,
     size: (u32, u32),
+    video: Option<VideoPlayer>,
+}
+
+struct Gpu {
+    texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
 }
 
 pub struct TextureCache {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     fallback: wgpu::BindGroup,
+    missing: wgpu::BindGroup,
     entries: HashMap<SourceId, Entry>,
     errors: HashMap<SourceId, String>,
+    waker: Waker,
 }
 
 impl TextureCache {
@@ -53,8 +68,22 @@ impl TextureCache {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let fallback = upload(device, queue, &layout, &sampler, 1, 1, &[255; 4], "om white");
-        Self { layout, sampler, fallback, entries: HashMap::new(), errors: HashMap::new() }
+        let fallback = upload(device, queue, &layout, &sampler, 1, 1, &[255; 4], "om white").bind_group;
+        let missing =
+            upload(device, queue, &layout, &sampler, 1, 1, &[0, 0, 0, 255], "om missing").bind_group;
+        Self {
+            layout,
+            sampler,
+            fallback,
+            missing,
+            entries: HashMap::new(),
+            errors: HashMap::new(),
+            waker: Arc::new(|| {}),
+        }
+    }
+
+    pub fn set_waker(&mut self, waker: Waker) {
+        self.waker = waker;
     }
 
     pub fn layout(&self) -> &wgpu::BindGroupLayout {
@@ -66,47 +95,118 @@ impl TextureCache {
     }
 
     pub fn size(&self, id: SourceId) -> Option<(u32, u32)> {
-        self.entries.get(&id).filter(|e| e.bind_group.is_some()).map(|e| e.size)
+        self.entries.get(&id).filter(|e| e.gpu.is_some()).map(|e| e.size)
     }
 
-    /// Loads new or changed image sources and drops removed ones.
-    pub fn sync(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, project: &Project) {
+    pub fn video_info(&self, id: SourceId) -> Option<&VideoInfo> {
+        self.entries.get(&id)?.video.as_ref().map(VideoPlayer::info)
+    }
+
+    /// Loads new or changed media sources, drops removed ones and uploads
+    /// the video frames for `time`.
+    pub fn sync(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, project: &Project, time: f64) {
         self.entries.retain(|id, _| project.source(*id).is_some());
         self.errors.retain(|id, _| project.source(*id).is_some());
 
         for src in &project.sources {
-            let SourceKind::Image { path } = &src.kind else {
-                self.entries.remove(&src.id);
-                self.errors.remove(&src.id);
-                continue;
-            };
-            if self.entries.get(&src.id).is_some_and(|e| &e.path == path) {
-                continue;
-            }
-            let max = device.limits().max_texture_dimension_2d;
-            let entry = match load_rgba(path, max) {
-                Ok(img) => {
+            let (path, is_video) = match &src.kind {
+                SourceKind::Image { path } => (path, false),
+                SourceKind::Video { path } => (path, true),
+                _ => {
+                    self.entries.remove(&src.id);
                     self.errors.remove(&src.id);
-                    let (w, h) = img.dimensions();
-                    let bg = upload(device, queue, &self.layout, &self.sampler, w, h, &img, "om image");
-                    Entry { path: path.clone(), bind_group: Some(bg), size: (w, h) }
-                }
-                Err(e) => {
-                    log::warn!("failed to load image {}: {e:#}", path.display());
-                    self.errors.insert(src.id, format!("{e:#}"));
-                    Entry { path: path.clone(), bind_group: None, size: (0, 0) }
+                    continue;
                 }
             };
-            self.entries.insert(src.id, entry);
+            let current =
+                self.entries.get(&src.id).is_some_and(|e| &e.path == path && e.is_video == is_video);
+            if !current {
+                let entry = if is_video {
+                    self.open_video(device, queue, src.id, path)
+                } else {
+                    self.load_image(device, queue, src.id, path)
+                };
+                self.entries.insert(src.id, entry);
+            }
+            if is_video {
+                self.update_video(device, queue, src.id, time);
+            }
+        }
+    }
+
+    fn load_image(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, id: SourceId, path: &Path) -> Entry {
+        let max = device.limits().max_texture_dimension_2d;
+        match load_rgba(path, max) {
+            Ok(img) => {
+                self.errors.remove(&id);
+                let (w, h) = img.dimensions();
+                let gpu = upload(device, queue, &self.layout, &self.sampler, w, h, &img, "om image");
+                Entry { path: path.to_path_buf(), is_video: false, gpu: Some(gpu), size: (w, h), video: None }
+            }
+            Err(e) => {
+                log::warn!("failed to load image {}: {e:#}", path.display());
+                self.errors.insert(id, format!("{e:#}"));
+                Entry { path: path.to_path_buf(), is_video: false, gpu: None, size: (0, 0), video: None }
+            }
+        }
+    }
+
+    fn open_video(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, id: SourceId, path: &Path) -> Entry {
+        let waker = self.waker.clone();
+        match VideoPlayer::open(path, move || waker()) {
+            Ok(player) => {
+                self.errors.remove(&id);
+                let (w, h) = (player.info().width.max(1), player.info().height.max(1));
+                // Black until the first frame is decoded.
+                let black = [0, 0, 0, 255].repeat((w * h) as usize);
+                let gpu = upload(device, queue, &self.layout, &self.sampler, w, h, &black, "om video");
+                Entry {
+                    path: path.to_path_buf(),
+                    is_video: true,
+                    gpu: Some(gpu),
+                    size: (w, h),
+                    video: Some(player),
+                }
+            }
+            Err(e) => {
+                log::warn!("failed to open video {}: {e:#}", path.display());
+                self.errors.insert(id, format!("{e:#}"));
+                Entry { path: path.to_path_buf(), is_video: true, gpu: None, size: (0, 0), video: None }
+            }
+        }
+    }
+
+    fn update_video(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, id: SourceId, time: f64) {
+        let Some(entry) = self.entries.get_mut(&id) else { return };
+        let Some(player) = &entry.video else { return };
+        player.seek(time);
+        if let Some(err) = player.error() {
+            self.errors.insert(id, err);
+        }
+        let Some(frame) = player.take_frame() else { return };
+        if entry.size != (frame.width, frame.height) || entry.gpu.is_none() {
+            entry.size = (frame.width, frame.height);
+            entry.gpu = Some(upload(
+                device,
+                queue,
+                &self.layout,
+                &self.sampler,
+                frame.width,
+                frame.height,
+                &frame.rgba,
+                "om video",
+            ));
+        } else if let Some(gpu) = &entry.gpu {
+            write_rgba(queue, &gpu.texture, frame.width, frame.height, &frame.rgba);
         }
     }
 
     pub fn bind_group_for(&self, source: Option<SourceId>, project: &Project) -> &wgpu::BindGroup {
-        source
-            .filter(|id| matches!(project.source(*id).map(|s| &s.kind), Some(SourceKind::Image { .. })))
-            .and_then(|id| self.entries.get(&id))
-            .and_then(|e| e.bind_group.as_ref())
-            .unwrap_or(&self.fallback)
+        let Some(id) = source.filter(|id| project.source(*id).is_some_and(|s| s.kind.media_path().is_some()))
+        else {
+            return &self.fallback;
+        };
+        self.entries.get(&id).and_then(|e| e.gpu.as_ref()).map_or(&self.missing, |g| &g.bind_group)
     }
 }
 
@@ -130,7 +230,7 @@ fn upload(
     height: u32,
     rgba: &[u8],
     label: &str,
-) -> wgpu::BindGroup {
+) -> Gpu {
     let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
@@ -142,9 +242,23 @@ fn upload(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    write_rgba(queue, &texture, width, height, rgba);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    });
+    Gpu { texture, bind_group }
+}
+
+fn write_rgba(queue: &wgpu::Queue, texture: &wgpu::Texture, width: u32, height: u32, rgba: &[u8]) {
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
-            texture: &texture,
+            texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
@@ -155,15 +269,6 @@ fn upload(
             bytes_per_row: Some(4 * width),
             rows_per_image: Some(height),
         },
-        size,
+        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
     );
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(label),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
-        ],
-    })
 }

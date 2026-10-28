@@ -36,8 +36,8 @@ pub fn menu_bar(ui: &mut Ui, app: &mut OpenMapperApp) {
                     app.act(Action::SaveAs);
                 }
                 ui.separator();
-                if item(ui, "Import Images…", None, true) {
-                    app.act(Action::AddImages);
+                if item(ui, "Import Images & Videos…", None, true) {
+                    app.act(Action::ImportMedia);
                 }
                 ui.separator();
                 if item(ui, "Quit", None, true) {
@@ -75,6 +75,9 @@ pub fn menu_bar(ui: &mut Ui, app: &mut OpenMapperApp) {
                 }
                 if item(ui, "Add Triangle", None, true) {
                     app.act(Action::AddSurface(Mask::Triangle));
+                }
+                if item(ui, "Add Cutout", None, true) {
+                    app.act(Action::AddCutout);
                 }
                 ui.separator();
                 let label = if app.editor.transform.is_some() { "Apply Transform" } else { "Free Transform" };
@@ -150,6 +153,13 @@ pub fn toolbar(ui: &mut Ui, app: &mut OpenMapperApp) {
             if ui.button("△ Triangle").clicked() {
                 app.act(Action::AddSurface(Mask::Triangle));
             }
+            if ui
+                .button("✂ Cutout")
+                .on_hover_text("Add a shape that cuts a hole in the surfaces below it")
+                .clicked()
+            {
+                app.act(Action::AddCutout);
+            }
             ui.separator();
 
             if let Some(tf) = &app.editor.transform {
@@ -218,8 +228,8 @@ pub fn toolbar(ui: &mut Ui, app: &mut OpenMapperApp) {
                 if ui.button("+ Pattern").on_hover_text("Add a generated pattern source").clicked() {
                     app.act(Action::AddSource(SourceKind::Generator(Generator::default())));
                 }
-                if ui.button("+ Image").clicked() {
-                    app.act(Action::AddImages);
+                if ui.button("+ Image / Video").on_hover_text("Import images and MP4 videos").clicked() {
+                    app.act(Action::ImportMedia);
                 }
             });
         });

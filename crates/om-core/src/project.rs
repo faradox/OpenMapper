@@ -115,9 +115,17 @@ impl Default for Generator {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum SourceKind {
-    Solid { color: Color },
+    Solid {
+        color: Color,
+    },
     Generator(Generator),
-    Image { path: PathBuf },
+    Image {
+        path: PathBuf,
+    },
+    /// MP4 (H.264). Plays in a loop, following the transport clock.
+    Video {
+        path: PathBuf,
+    },
 }
 
 impl SourceKind {
@@ -126,6 +134,15 @@ impl SourceKind {
             SourceKind::Solid { .. } => "Color",
             SourceKind::Generator(_) => "Generator",
             SourceKind::Image { .. } => "Image",
+            SourceKind::Video { .. } => "Video",
+        }
+    }
+
+    /// File backing this source, for images and videos.
+    pub fn media_path(&self) -> Option<&Path> {
+        match self {
+            SourceKind::Image { path } | SourceKind::Video { path } => Some(path),
+            _ => None,
         }
     }
 }
@@ -215,6 +232,9 @@ pub struct Surface {
     pub mapping: Mapping,
     pub texture: TextureTransform,
     pub animation: Animation,
+    /// Cutout: instead of drawing its source, the surface punches a hole in
+    /// every surface below it (showing the canvas background).
+    pub cutout: bool,
 }
 
 impl Default for Surface {
@@ -240,6 +260,7 @@ impl Surface {
             mapping: Mapping::Surface,
             texture: TextureTransform::default(),
             animation: Animation::default(),
+            cutout: false,
         }
     }
 
@@ -358,16 +379,16 @@ impl Project {
         Ok(())
     }
 
-    /// Loads a project. Relative image paths are resolved against the
+    /// Loads a project. Relative media paths are resolved against the
     /// project file's directory.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let mut p = Self::from_json(&std::fs::read_to_string(path)?)?;
         if let Some(dir) = path.parent() {
             for s in &mut p.sources {
-                if let SourceKind::Image { path: img } = &mut s.kind
-                    && img.is_relative()
+                if let SourceKind::Image { path } | SourceKind::Video { path } = &mut s.kind
+                    && path.is_relative()
                 {
-                    *img = dir.join(&*img);
+                    *path = dir.join(&*path);
                 }
             }
         }
@@ -478,6 +499,19 @@ mod tests {
         let id = p.surfaces[0].source.unwrap();
         p.remove_source(id);
         assert_eq!(p.surfaces[0].source, None);
+    }
+
+    #[test]
+    fn load_resolves_relative_media_paths() {
+        let dir = std::env::temp_dir().join(format!("om-load-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut p = Project::empty();
+        p.add_source("clip", SourceKind::Video { path: "media/clip.mp4".into() });
+        let file = dir.join("p.omap");
+        p.save(&file).unwrap();
+        let back = Project::load(&file).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(back.sources[0].kind.media_path(), Some(dir.join("media/clip.mp4").as_path()));
     }
 
     #[test]

@@ -18,6 +18,7 @@ use glam::{Mat3, Vec2};
 use om_core::anim::evaluate;
 use om_core::{BlendMode, Mapping, Mask, Project, SourceId, SourceKind, Surface};
 
+pub use om_media::{VIDEO_EXTENSIONS, VideoInfo};
 use textures::TextureCache;
 
 /// Format of the output texture (required by egui for native textures).
@@ -135,9 +136,19 @@ impl Renderer {
         self.textures.error(id)
     }
 
-    /// Pixel size of a loaded image source.
+    /// Pixel size of a loaded image or video source.
     pub fn source_size(&self, id: SourceId) -> Option<(u32, u32)> {
         self.textures.size(id)
+    }
+
+    pub fn video_info(&self, id: SourceId) -> Option<&VideoInfo> {
+        self.textures.video_info(id)
+    }
+
+    /// `waker` is called from decoder threads when a new video frame is
+    /// ready, so the UI can repaint even while paused.
+    pub fn set_frame_waker(&mut self, waker: impl Fn() + Send + Sync + 'static) {
+        self.textures.set_waker(std::sync::Arc::new(waker));
     }
 
     /// Renders the project at `time` seconds and submits the work.
@@ -148,7 +159,7 @@ impl Renderer {
             self.output_generation += 1;
         }
 
-        self.textures.sync(&self.device, &self.queue, project);
+        self.textures.sync(&self.device, &self.queue, project, time);
 
         let visible: Vec<&Surface> = project.surfaces.iter().filter(|s| s.visible).collect();
         self.ensure_uniform_capacity(visible.len());
@@ -189,7 +200,8 @@ impl Renderer {
             });
 
             for (i, s) in visible.iter().enumerate() {
-                pass.set_pipeline(&self.pipelines[&s.blend]);
+                let blend = if s.cutout { BlendMode::Normal } else { s.blend };
+                pass.set_pipeline(&self.pipelines[&blend]);
                 pass.set_bind_group(0, &self.uniform_bind_group, &[(i as u64 * self.uniform_stride) as u32]);
                 pass.set_bind_group(1, self.textures.bind_group_for(s.source, project), &[]);
                 pass.draw(0..6, 0..1);
@@ -214,14 +226,18 @@ fn surface_uniforms(project: &Project, s: &Surface, canvas: Vec2, time: f32) -> 
     let frame = evaluate(s, canvas, time);
     let c = s.corners;
 
+    // A cutout paints the canvas background over everything below it, using
+    // the same coverage (mask, feather, opacity) as a normal surface.
+    let bg = project.canvas.background;
     let (kind, color_a, color_b, scale, speed, angle) = match s
         .source
         .and_then(|id| project.source(id))
         .map(|src| &src.kind)
     {
+        _ if s.cutout => (1.0, [bg[0], bg[1], bg[2], 1.0], [0.0; 4], 1.0, 0.0, 0.0),
         None => (1.0, [0.0; 4], [0.0; 4], 1.0, 0.0, 0.0),
         Some(SourceKind::Solid { color }) => (1.0, *color, *color, 1.0, 0.0, 0.0),
-        Some(SourceKind::Image { .. }) => (0.0, [1.0; 4], [1.0; 4], 1.0, 0.0, 0.0),
+        Some(SourceKind::Image { .. } | SourceKind::Video { .. }) => (0.0, [1.0; 4], [1.0; 4], 1.0, 0.0, 0.0),
         Some(SourceKind::Generator(g)) => {
             (g.pattern.shader_index() as f32, g.color_a, g.color_b, g.scale, g.speed, g.angle.to_radians())
         }
@@ -243,11 +259,11 @@ fn surface_uniforms(project: &Project, s: &Surface, canvas: Vec2, time: f32) -> 
         inv_h: mat3_cols(frame.canvas_to_surface),
         uv_m: mat3_cols(frame.uv_matrix),
         canvas: [canvas.x, canvas.y, frame.local_time, mapping],
-        tint: s.tint,
+        tint: if s.cutout { [1.0; 4] } else { s.tint },
         color_a,
         color_b,
         gen_params: [kind, scale, speed, angle],
-        misc: [frame.opacity, frame.hue_shift, s.feather.clamp(0.0, 0.5), mask],
+        misc: [frame.opacity, if s.cutout { 0.0 } else { frame.hue_shift }, s.feather.clamp(0.0, 0.5), mask],
     }
 }
 
@@ -360,6 +376,20 @@ mod tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
             .validate(&module)
             .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    #[test]
+    fn cutout_paints_the_background() {
+        let mut p = om_core::Project::demo();
+        p.canvas.background = [0.1, 0.2, 0.3, 1.0];
+        p.surfaces[0].cutout = true;
+        p.surfaces[0].tint = [0.5; 4];
+        p.surfaces[0].animation.hue_speed = 1.0;
+        let u = super::surface_uniforms(&p, &p.surfaces[0], p.canvas.size(), 0.5);
+        assert_eq!(u.gen_params[0], 1.0, "drawn as a solid color");
+        assert_eq!(u.color_a, [0.1, 0.2, 0.3, 1.0]);
+        assert_eq!(u.tint, [1.0; 4]);
+        assert_eq!(u.misc[1], 0.0, "no hue shift");
     }
 
     #[test]

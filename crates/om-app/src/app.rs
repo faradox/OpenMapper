@@ -6,9 +6,10 @@ use std::time::Instant;
 
 use egui::{Key, KeyboardShortcut, Modifiers};
 use glam::Vec2;
-use om_core::{FILE_EXTENSION, Mask, Project, SourceKind};
-use om_render::Renderer;
+use om_core::{FILE_EXTENSION, Mask, Project, SourceId, SourceKind};
+use om_render::{Renderer, VIDEO_EXTENSIONS};
 
+use crate::dialogs::{self, FileDialogs, Kind, Prompt, PromptAnswer, Purpose, Then};
 use crate::document::Document;
 use crate::editor::Editor;
 use crate::output::OutputWindow;
@@ -71,7 +72,12 @@ pub enum Action {
     ZoomBy(f32),
     ToggleOutput,
     AddSource(SourceKind),
-    AddImages,
+    /// Import images and videos through the file dialog.
+    ImportMedia,
+    /// Pick a new file for an image or video source.
+    ReplaceMedia(SourceId),
+    /// Add a surface that cuts a hole in the surfaces below it.
+    AddCutout,
     Nudge(Vec2),
     /// Cmd+T: start Free Transform, or apply it if already active.
     FreeTransform,
@@ -108,6 +114,10 @@ pub struct OpenMapperApp {
     output_tex: egui::TextureId,
     output_generation: u64,
     actions: Vec<Action>,
+    dialogs: FileDialogs,
+    prompt: Option<Prompt>,
+    /// Set once the user agreed to quit, so the next close request goes through.
+    allow_close: bool,
     status: Option<(String, Instant)>,
     title: String,
     frame_times: std::collections::VecDeque<f32>,
@@ -120,14 +130,19 @@ impl OpenMapperApp {
             .wgpu_render_state
             .clone()
             .ok_or("OpenMapper needs the wgpu renderer (no GPU adapter found?)")?;
-        let renderer = Renderer::new(&render_state.device, &render_state.queue);
+        let mut renderer = Renderer::new(&render_state.device, &render_state.queue);
+        let ctx = cc.egui_ctx.clone();
+        renderer.set_frame_waker(move || ctx.request_repaint());
         let output_tex = render_state.renderer.write().register_native_texture(
             &render_state.device,
             &renderer.output().view,
             wgpu::FilterMode::Linear,
         );
 
-        let last: Option<PathBuf> = cc.storage.and_then(|s| eframe::get_value(s, LAST_PROJECT_KEY));
+        // A project passed on the command line wins over the last one used.
+        let arg = std::env::args_os().nth(1).map(PathBuf::from);
+        let last: Option<PathBuf> =
+            arg.or_else(|| cc.storage.and_then(|s| eframe::get_value(s, LAST_PROJECT_KEY)));
         let doc = match last.filter(|p| p.exists()) {
             Some(path) => match Project::load(&path) {
                 Ok(p) => Document::new(p, Some(path)),
@@ -150,6 +165,9 @@ impl OpenMapperApp {
             output_tex,
             output_generation: 0,
             actions: Vec::new(),
+            dialogs: FileDialogs::default(),
+            prompt: None,
+            allow_close: false,
             status: None,
             title: String::new(),
             frame_times: Default::default(),
@@ -178,6 +196,9 @@ impl OpenMapperApp {
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use shortcuts::*;
+        if self.prompt.is_some() || self.dialogs.busy() {
+            return;
+        }
         let text_focus = ctx.egui_wants_keyboard_input();
         let transforming = self.editor.transform.is_some();
         let mut acts = Vec::new();
@@ -259,13 +280,13 @@ impl OpenMapperApp {
 
     // ---- Actions -------------------------------------------------------------
 
-    fn run_actions(&mut self, ctx: &egui::Context) {
+    fn run_actions(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         for action in std::mem::take(&mut self.actions) {
-            self.run_action(ctx, action);
+            self.run_action(ctx, frame, action);
         }
     }
 
-    fn run_action(&mut self, ctx: &egui::Context, action: Action) {
+    fn run_action(&mut self, ctx: &egui::Context, frame: &eframe::Frame, action: Action) {
         log::debug!("action: {action:?}");
         let sel = self.editor.selection.surfaces.clone();
         // Anything that changes what exists or what is selected first applies
@@ -283,47 +304,18 @@ impl OpenMapperApp {
                     | Action::Duplicate
                     | Action::Delete
                     | Action::AddSurface(_)
+                    | Action::AddCutout
             )
         {
             self.editor.apply_transform();
         }
         match action {
-            Action::NewDemo | Action::NewEmpty => {
-                if self.confirm_discard() {
-                    let p = if action == Action::NewDemo { Project::demo() } else { Project::empty() };
-                    self.doc = Document::new(p, None);
-                    self.editor.selection.clear();
-                    self.editor.selected_source = None;
-                    self.editor.fit();
-                }
-            }
-            Action::Open => {
-                if !self.confirm_discard() {
-                    return;
-                }
-                let picked = rfd::FileDialog::new()
-                    .set_title("Open Project")
-                    .add_filter("OpenMapper project", &[FILE_EXTENSION])
-                    .pick_file();
-                if let Some(path) = picked {
-                    match Project::load(&path) {
-                        Ok(p) => {
-                            self.doc = Document::new(p, Some(path));
-                            self.editor.selection.clear();
-                            self.editor.fit();
-                            self.set_status("Project opened");
-                        }
-                        Err(e) => error_dialog("Could not open project", &format!("{e:#}")),
-                    }
-                }
-            }
-            Action::Save => {
-                self.save(false);
-            }
-            Action::SaveAs => {
-                self.save(true);
-            }
-            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::NewDemo => self.guard(ctx, frame, Then::NewDemo),
+            Action::NewEmpty => self.guard(ctx, frame, Then::NewEmpty),
+            Action::Open => self.guard(ctx, frame, Then::Open),
+            Action::Save => self.save(ctx, frame, false, None),
+            Action::SaveAs => self.save(ctx, frame, true, None),
+            Action::Quit => self.guard(ctx, frame, Then::Quit),
             Action::Undo => {
                 if self.doc.undo() {
                     self.set_status("Undo");
@@ -362,6 +354,10 @@ impl OpenMapperApp {
                 let id = self.doc.add_surface(mask);
                 self.editor.selection.set(vec![id]);
             }
+            Action::AddCutout => {
+                let id = self.doc.add_cutout();
+                self.editor.selection.set(vec![id]);
+            }
             Action::Stagger => {
                 if sel.len() > 1 {
                     self.doc.stagger(&sel, self.stagger_step);
@@ -389,14 +385,13 @@ impl OpenMapperApp {
                 let id = self.doc.project.add_source(name, kind);
                 self.editor.selected_source = Some(id);
             }
-            Action::AddImages => {
-                let picked = rfd::FileDialog::new()
-                    .set_title("Import Images")
-                    .add_filter("Images", IMAGE_EXTENSIONS)
-                    .pick_files();
-                if let Some(paths) = picked {
-                    self.import_images(paths);
-                }
+            Action::ImportMedia => {
+                let dialog = media_dialog(frame, "Import Images and Videos");
+                self.dialogs.start(ctx, Purpose::ImportMedia, dialog, Kind::PickFiles);
+            }
+            Action::ReplaceMedia(id) => {
+                let dialog = media_dialog(frame, "Replace Media");
+                self.dialogs.start(ctx, Purpose::ReplaceMedia(id), dialog, Kind::PickFile);
             }
             Action::Nudge(delta) => self.nudge(delta),
             Action::FreeTransform => {
@@ -436,64 +431,163 @@ impl OpenMapperApp {
         }
     }
 
-    pub fn import_images(&mut self, paths: Vec<PathBuf>) {
+    /// Adds images and videos as sources (other files are skipped) and
+    /// shows the last one on the selected surfaces.
+    pub fn import_media(&mut self, paths: Vec<PathBuf>) {
         let mut last = None;
+        let mut skipped = Vec::new();
         for path in paths {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-            if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+            let kind = if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+                SourceKind::Image { path: path.clone() }
+            } else if VIDEO_EXTENSIONS.contains(&ext.as_str()) {
+                SourceKind::Video { path: path.clone() }
+            } else {
+                skipped.push(path.file_name().unwrap_or_default().to_string_lossy().into_owned());
                 continue;
-            }
-            let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or("Image".into());
-            last = Some(self.doc.project.add_source(name, SourceKind::Image { path }));
+            };
+            let name =
+                path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or(kind.label().into());
+            last = Some(self.doc.project.add_source(name, kind));
         }
         if let Some(id) = last {
             self.editor.selected_source = Some(id);
             if !self.editor.selection.surfaces.is_empty() {
                 let sel = self.editor.selection.surfaces.clone();
                 self.doc.assign_source(&sel, Some(id));
+            } else {
+                self.set_status("Imported. Select surfaces and double-click the source to show it.");
+            }
+        }
+        if !skipped.is_empty() {
+            self.set_status(format!("Not an image or video: {}", skipped.join(", ")));
+        }
+    }
+
+    /// Saves to the current file, or asks for one first. `then` runs after a
+    /// successful save (used by the unsaved-changes prompt).
+    fn save(&mut self, ctx: &egui::Context, frame: &eframe::Frame, force_dialog: bool, then: Option<Then>) {
+        match (&self.doc.path, force_dialog) {
+            (Some(p), false) => {
+                let path = p.clone();
+                self.write_project(ctx, frame, path, then);
+            }
+            _ => {
+                let dialog = rfd::AsyncFileDialog::new()
+                    .set_parent(frame)
+                    .set_title("Save Project")
+                    .add_filter("OpenMapper project", &[FILE_EXTENSION])
+                    .set_file_name(format!("{}.{FILE_EXTENSION}", self.doc.display_name()));
+                self.dialogs.start(ctx, Purpose::SaveAs { then }, dialog, Kind::SaveFile);
             }
         }
     }
 
-    fn save(&mut self, force_dialog: bool) -> bool {
-        let path = match (&self.doc.path, force_dialog) {
-            (Some(p), false) => Some(p.clone()),
-            _ => rfd::FileDialog::new()
-                .set_title("Save Project")
-                .add_filter("OpenMapper project", &[FILE_EXTENSION])
-                .set_file_name(format!("{}.{FILE_EXTENSION}", self.doc.display_name()))
-                .save_file()
-                .map(|p| if p.extension().is_none() { p.with_extension(FILE_EXTENSION) } else { p }),
-        };
-        let Some(path) = path else { return false };
+    fn write_project(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+        path: PathBuf,
+        then: Option<Then>,
+    ) {
+        let path = if path.extension().is_none() { path.with_extension(FILE_EXTENSION) } else { path };
         self.doc.commit_if_changed();
         match self.doc.save_to(path) {
             Ok(()) => {
                 self.set_status("Saved");
-                true
+                if let Some(then) = then {
+                    self.proceed(ctx, frame, then);
+                }
             }
-            Err(e) => {
-                error_dialog("Could not save project", &format!("{e:#}"));
-                false
+            Err(e) => self.show_error("Could not save project", format!("{e:#}")),
+        }
+    }
+
+    /// Runs `then`, first asking to save unsaved changes.
+    fn guard(&mut self, ctx: &egui::Context, frame: &eframe::Frame, then: Then) {
+        self.doc.commit_if_changed();
+        if self.doc.dirty {
+            self.prompt = Some(Prompt::Unsaved { name: self.doc.display_name(), then });
+        } else {
+            self.proceed(ctx, frame, then);
+        }
+    }
+
+    fn proceed(&mut self, ctx: &egui::Context, frame: &eframe::Frame, then: Then) {
+        match then {
+            Then::NewDemo | Then::NewEmpty => {
+                let p = if then == Then::NewDemo { Project::demo() } else { Project::empty() };
+                self.replace_document(Document::new(p, None));
+            }
+            Then::Open => {
+                let dialog = rfd::AsyncFileDialog::new()
+                    .set_parent(frame)
+                    .set_title("Open Project")
+                    .add_filter("OpenMapper project", &[FILE_EXTENSION]);
+                self.dialogs.start(ctx, Purpose::Open, dialog, Kind::PickFile);
+            }
+            Then::OpenPath(path) => match Project::load(&path) {
+                Ok(p) => {
+                    self.replace_document(Document::new(p, Some(path)));
+                    self.set_status("Project opened");
+                }
+                Err(e) => self.show_error("Could not open project", format!("{e:#}")),
+            },
+            Then::Quit => {
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
     }
 
-    /// Asks to save unsaved changes. Returns `false` if the user cancelled.
-    fn confirm_discard(&mut self) -> bool {
-        self.doc.commit_if_changed();
-        if !self.doc.dirty {
-            return true;
+    fn replace_document(&mut self, doc: Document) {
+        self.editor.transform = None;
+        self.doc = doc;
+        self.editor.selection.clear();
+        self.editor.selected_source = None;
+        self.editor.fit();
+    }
+
+    pub fn show_error(&mut self, title: &str, message: String) {
+        log::error!("{title}: {message}");
+        self.prompt = Some(Prompt::Error { title: title.into(), message });
+    }
+
+    /// Handles a file dialog that just closed.
+    fn finish_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+        purpose: Purpose,
+        paths: Vec<PathBuf>,
+    ) {
+        let Some(first) = paths.first().cloned() else { return };
+        match purpose {
+            Purpose::Open => self.proceed(ctx, frame, Then::OpenPath(first)),
+            Purpose::SaveAs { then } => self.write_project(ctx, frame, first, then),
+            Purpose::ImportMedia => self.import_media(paths),
+            Purpose::ReplaceMedia(id) => {
+                let ext = first.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+                let kind = if VIDEO_EXTENSIONS.contains(&ext.as_str()) {
+                    SourceKind::Video { path: first }
+                } else {
+                    SourceKind::Image { path: first }
+                };
+                if let Some(src) = self.doc.project.source_mut(id) {
+                    src.kind = kind;
+                }
+            }
         }
-        let answer = rfd::MessageDialog::new()
-            .set_title("Unsaved changes")
-            .set_description(format!("Save changes to \"{}\" first?", self.doc.display_name()))
-            .set_buttons(rfd::MessageButtons::YesNoCancel)
-            .show();
+    }
+
+    fn show_prompt(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let Some(prompt) = &self.prompt else { return };
+        let Some(answer) = dialogs::show_prompt(ctx, prompt) else { return };
+        self.prompt = None;
         match answer {
-            rfd::MessageDialogResult::Yes => self.save(false),
-            rfd::MessageDialogResult::No => true,
-            _ => false,
+            PromptAnswer::Save(then) => self.save(ctx, frame, false, Some(then)),
+            PromptAnswer::Discard(then) => self.proceed(ctx, frame, then),
+            PromptAnswer::Dismiss => {}
         }
     }
 
@@ -521,36 +615,35 @@ impl OpenMapperApp {
         }
     }
 
-    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+    fn handle_dropped_files(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         let dropped: Vec<PathBuf> =
             ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
-        if dropped.is_empty() {
+        if dropped.is_empty() || self.prompt.is_some() {
             return;
         }
         if let Some(project) = dropped.iter().find(|p| p.extension().is_some_and(|e| e == FILE_EXTENSION)) {
-            if self.confirm_discard() {
-                match Project::load(project) {
-                    Ok(p) => {
-                        self.doc = Document::new(p, Some(project.clone()));
-                        self.editor.selection.clear();
-                    }
-                    Err(e) => error_dialog("Could not open project", &format!("{e:#}")),
-                }
-            }
+            self.guard(ctx, frame, Then::OpenPath(project.clone()));
         } else {
-            self.import_images(dropped);
+            self.import_media(dropped);
         }
     }
 
-    fn handle_close(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.viewport().close_requested()) && !self.confirm_discard() {
+    fn handle_close(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        if !ctx.input(|i| i.viewport().close_requested()) || self.allow_close {
+            return;
+        }
+        self.doc.commit_if_changed();
+        if self.doc.dirty {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.prompt.is_none() {
+                self.guard(ctx, frame, Then::Quit);
+            }
         }
     }
 }
 
 impl eframe::App for OpenMapperApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let dt = ctx.input(|i| i.unstable_dt);
         self.frame_times.push_back(dt);
@@ -560,7 +653,10 @@ impl eframe::App for OpenMapperApp {
 
         self.transport.tick();
         self.handle_shortcuts(&ctx);
-        self.handle_dropped_files(&ctx);
+        self.handle_dropped_files(&ctx, frame);
+        if let Some((purpose, paths)) = self.dialogs.poll() {
+            self.finish_dialog(&ctx, frame, purpose, paths);
+        }
         self.render_output();
 
         panels::menu_bar(ui, self);
@@ -574,7 +670,8 @@ impl eframe::App for OpenMapperApp {
 
         self.output.show(&ctx, self.output_tex, &self.doc.project, &self.editor.selection);
 
-        self.run_actions(&ctx);
+        self.run_actions(&ctx, frame);
+        self.show_prompt(&ctx, frame);
         self.editor.selection.retain_existing(&self.doc.project);
         if let Some(id) = self.editor.selected_source
             && self.doc.project.source(id).is_none()
@@ -588,7 +685,7 @@ impl eframe::App for OpenMapperApp {
         }
 
         self.update_title(&ctx);
-        self.handle_close(&ctx);
+        self.handle_close(&ctx, frame);
 
         if self.transport.playing {
             ctx.request_repaint();
@@ -602,11 +699,12 @@ impl eframe::App for OpenMapperApp {
     }
 }
 
-pub fn error_dialog(title: &str, message: &str) {
-    log::error!("{title}: {message}");
-    rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Error)
+fn media_dialog(frame: &eframe::Frame, title: &str) -> rfd::AsyncFileDialog {
+    let all: Vec<&str> = IMAGE_EXTENSIONS.iter().chain(VIDEO_EXTENSIONS).copied().collect();
+    rfd::AsyncFileDialog::new()
+        .set_parent(frame)
         .set_title(title)
-        .set_description(message)
-        .show();
+        .add_filter("Images and videos", &all)
+        .add_filter("Images", IMAGE_EXTENSIONS)
+        .add_filter("Videos (H.264 MP4)", VIDEO_EXTENSIONS)
 }

@@ -1,5 +1,5 @@
-//! Sources panel: the media library (colors, generated patterns, images)
-//! plus an editor for the selected source.
+//! Sources panel: the media library (colors, generated patterns, images,
+//! videos) plus an editor for the selected source.
 
 use egui::{Button, RichText, Ui};
 use om_core::{Generator, Pattern, SourceId, SourceKind};
@@ -19,8 +19,8 @@ pub fn sources_panel(ui: &mut Ui, app: &mut OpenMapperApp) {
         if ui.small_button("+ Pattern").clicked() {
             app.act(Action::AddSource(SourceKind::Generator(Generator::default())));
         }
-        if ui.small_button("+ Image…").clicked() {
-            app.act(Action::AddImages);
+        if ui.small_button("+ Media…").on_hover_text("Import images and MP4 videos").clicked() {
+            app.act(Action::ImportMedia);
         }
     });
     ui.add_space(2.0);
@@ -42,6 +42,7 @@ pub fn sources_panel(ui: &mut Ui, app: &mut OpenMapperApp) {
                 let Some(src) = app.doc.project.source(id) else { continue };
                 let selected = app.editor.selected_source == Some(id);
                 let in_use = used_by_selection.contains(&id);
+                let broken = app.renderer.source_error(id).is_some();
                 let resp = ui
                     .horizontal(|ui| {
                         swatch(ui, &src.kind);
@@ -53,9 +54,14 @@ pub fn sources_panel(ui: &mut Ui, app: &mut OpenMapperApp) {
                             SourceKind::Generator(g) => g.pattern.label(),
                             other => other.label(),
                         };
+                        let hint = if broken {
+                            RichText::new(format!("⚠ {hint}")).small().color(theme::WARN)
+                        } else {
+                            RichText::new(hint).small().weak()
+                        };
                         ui.add(
                             Button::selectable(selected, text)
-                                .right_text(RichText::new(hint).small().weak())
+                                .right_text(hint)
                                 .truncate()
                                 .min_size(egui::vec2(ui.available_width() - 4.0, 0.0)),
                         )
@@ -99,7 +105,9 @@ pub fn sources_panel(ui: &mut Ui, app: &mut OpenMapperApp) {
     });
 
     let error = app.renderer.source_error(id).map(str::to_owned);
-    let image_size = app.renderer.source_size(id);
+    let media_size = app.renderer.source_size(id);
+    let duration = app.renderer.video_info(id).map(|v| v.duration);
+    let mut replace = false;
     let Some(src) = app.doc.project.source_mut(id) else { return };
 
     egui::ScrollArea::vertical().id_salt("source_editor").auto_shrink([false, false]).show(ui, |ui| {
@@ -115,23 +123,22 @@ pub fn sources_panel(ui: &mut Ui, app: &mut OpenMapperApp) {
                     ui.end_row();
                 }
                 SourceKind::Generator(g) => generator_ui(ui, g),
-                SourceKind::Image { path } => {
+                SourceKind::Image { path } | SourceKind::Video { path } => {
                     prop_label(ui, "File", "");
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     ui.label(name).on_hover_text(path.display().to_string());
                     ui.end_row();
                     prop_label(ui, "", "");
-                    if ui.button("Replace…").clicked()
-                        && let Some(p) = rfd::FileDialog::new()
-                            .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tga"])
-                            .pick_file()
-                    {
-                        *path = p;
-                    }
+                    replace = ui.button("Replace…").clicked();
                     ui.end_row();
-                    if let Some((w, h)) = image_size {
+                    if let Some((w, h)) = media_size {
                         prop_label(ui, "Size", "");
                         ui.label(format!("{w} × {h} px"));
+                        ui.end_row();
+                    }
+                    if let Some(d) = duration {
+                        prop_label(ui, "Length", "Videos loop and follow the play clock");
+                        ui.label(format!("{d:.2} s, looping"));
                         ui.end_row();
                     }
                 }
@@ -141,6 +148,9 @@ pub fn sources_panel(ui: &mut Ui, app: &mut OpenMapperApp) {
             ui.colored_label(theme::WARN, format!("⚠ {err}"));
         }
     });
+    if replace {
+        app.act(Action::ReplaceMedia(id));
+    }
 }
 
 fn generator_ui(ui: &mut Ui, g: &mut Generator) {
@@ -188,11 +198,12 @@ fn swatch(ui: &mut Ui, kind: &SourceKind) {
             p.rect_filled(l, 0.0, to_color32(g.color_a));
             p.rect_filled(r, 0.0, to_color32(g.color_b));
         }
-        SourceKind::Image { .. } => {
+        SourceKind::Image { .. } | SourceKind::Video { .. } => {
+            let icon = if matches!(kind, SourceKind::Video { .. }) { "🎬" } else { "🖼" };
             p.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "🖼",
+                icon,
                 egui::FontId::proportional(12.0),
                 ui.visuals().text_color(),
             );

@@ -125,6 +125,18 @@ impl Document {
         id
     }
 
+    /// Adds a cutout on top of the stack: a quad that punches a hole in
+    /// everything below it.
+    pub fn add_cutout(&mut self) -> SurfaceId {
+        let id = self.add_surface(Mask::Quad);
+        let name = self.project.unique_surface_name("Cutout");
+        let s = self.project.surface_mut(id).expect("just added");
+        s.cutout = true;
+        s.source = None;
+        s.name = name;
+        id
+    }
+
     /// Duplicates surfaces (placed above the originals, slightly offset).
     pub fn duplicate(&mut self, ids: &[SurfaceId]) -> Vec<SurfaceId> {
         let mut new_ids = Vec::new();
@@ -201,6 +213,18 @@ mod tests {
 
     fn ids(doc: &Document) -> Vec<u64> {
         doc.project.surfaces.iter().map(|s| s.id.0).collect()
+    }
+
+    #[test]
+    fn add_cutout_goes_on_top_without_source() {
+        let mut doc = Document::new(Project::empty(), None);
+        doc.add_surface(Mask::Quad);
+        let id = doc.add_cutout();
+        let top = doc.project.surfaces.last().unwrap();
+        assert_eq!(top.id, id);
+        assert!(top.cutout);
+        assert_eq!(top.source, None);
+        assert_eq!(top.name, "Cutout 1");
     }
 
     #[test]

@@ -7,8 +7,9 @@ animate them. The interface feels familiar to anyone who knows Photoshop.
 Written in Rust (egui + wgpu). macOS is the primary target; Linux is the
 development platform; Windows builds come for free.
 
-> Status: **v0.1, the foundation.** Enough to map a box, a wall or a few shapes
-> and make them move. See [docs/roadmap.md](docs/roadmap.md) for what comes next.
+> Status: **v0.2.** Enough to map a box, a wall or a few shapes, fill them with
+> patterns, images or video, and make them move. See [docs/roadmap.md](docs/roadmap.md)
+> for what comes next.
 
 ## Why another mapper?
 
@@ -21,16 +22,19 @@ development platform; Windows builds come for free.
 - **Familiar to designers.** Layers panel, blend modes, opacity, Cmd+Z,
   Cmd+D, Cmd+[ / ], Space to pan. Shortcuts follow Photoshop where it makes sense.
 
-## What v0.1 can do
+## What it can do
 
 - Perspective-correct **four-corner surfaces** with Quad, Ellipse or Triangle shape.
 - **Free Transform** (`Cmd+T`): scale, rotate and move one or many surfaces with a
   bounding box, just like Photoshop (Shift = proportional / 15° steps, Alt = from center).
+- **Cutouts**: a shape that cuts a hole in every surface below it (windows, doors,
+  anything in front of the wall). Works with ellipse/triangle shapes, feather and opacity.
 - **Corner snapping** and **welded corners**: faces that share a corner move together,
   which makes mapping a cube easy. Hold Alt/Option to bypass either.
 - **Sources**: solid colors, seven animated GPU **patterns** (gradient, checker, stripes,
-  rings, noise, plasma, calibration test grid) and **images** (PNG/JPEG/GIF/WebP/BMP/TGA,
-  also via drag & drop).
+  rings, noise, plasma, calibration test grid), **images** (PNG/JPEG/GIF/WebP/BMP/TGA)
+  and **videos** (H.264 in MP4/MOV, looping, synced to the play clock). Import from the
+  menu or by drag & drop.
 - **Fit** (whole texture per surface) or **Span** (one texture across the whole canvas)
   mapping, plus texture offset, scale, rotation and flip.
 - **Animate**: scroll, spin, hue cycle, zoom pulse and opacity pulse/strobe (LFOs with
@@ -38,7 +42,8 @@ development platform; Windows builds come for free.
 - Opacity, tint, feathered edges and blend modes (Normal, Add, Screen, Multiply).
 - **Projector output window**: drag it to the projector and press `F` for full screen.
   Optional outlines on the projector help with aligning corners on the real object.
-- Undo/redo, save/open (`.omap`, JSON), reopens the last project on launch.
+- Undo/redo, save/open (`.omap`, JSON), reopens the last project on launch
+  (or the one given on the command line: `openmapper show.omap`).
 
 ## Quick start
 
@@ -67,6 +72,7 @@ macOS bundles (built by GitHub Actions) and Windows.
 | Drag on empty canvas | Marquee select |
 | Arrows (`Shift` ×10) | Nudge selection, or the last clicked corner |
 | `Alt`/`Option` while dragging | No snapping, move a welded corner alone |
+| `Cmd+S` / `Cmd+Shift+S` | Save / save as |
 | `Cmd+Z` / `Cmd+Shift+Z` | Undo / redo |
 | `Cmd+D`, `Delete` | Duplicate, delete |
 | `Cmd+]` / `Cmd+[` (+`Shift`) | Bring forward / send backward (to front / back) |
@@ -81,6 +87,7 @@ macOS bundles (built by GitHub Actions) and Windows.
 ```
 crates/
   om-core/    document model, perspective math, animation, undo, multi-edit diff (no GPU)
+  om-media/   video decoding (MP4 + H.264 via OpenH264) on background threads
   om-render/  wgpu compositor: renders a project into the output texture (WGSL shader)
   om-app/     the desktop app: egui panels, canvas editor, projector window
 docs/         architecture, user guide, roadmap, platform notes, implementation trackers

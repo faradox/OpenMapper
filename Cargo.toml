@@ -1,15 +1,16 @@
 [workspace]
 resolver = "3"
-members = ["crates/om-core", "crates/om-render", "crates/om-app"]
+members = ["crates/om-core", "crates/om-media", "crates/om-render", "crates/om-app"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 
 [workspace.dependencies]
 om-core = { path = "crates/om-core" }
+om-media = { path = "crates/om-media" }
 om-render = { path = "crates/om-render" }
 # eframe defaults give us wgpu, clipboard, accessibility, X11 + Wayland and system fonts.
 eframe = { version = "0.37", features = ["persistence"] }
@@ -21,7 +22,13 @@ glam = { version = "0.34", features = ["serde", "bytemuck"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tga"] }
-rfd = "0.17"
+# GTK3 dialogs on Linux: they work without xdg-desktop-portal or zenity (no effect on macOS/Windows).
+rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
+# Runs rfd's async dialogs off the UI thread.
+pollster = "0.4"
+# Video: MP4 demuxing and H.264 decoding (OpenH264, compiled from source; no system libraries).
+mp4 = "0.14"
+openh264 = "0.9"
 bytemuck = { version = "1", features = ["derive"] }
 anyhow = "1"
 log = "0.4"

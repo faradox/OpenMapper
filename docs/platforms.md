@@ -7,8 +7,9 @@ cargo run              # debug build, deps optimized
 cargo run --release
 ```
 
-Needs a Vulkan driver (Mesa is fine) and X11 or Wayland. The GPU backend is chosen
-by wgpu automatically. Force one with `WGPU_BACKEND=vulkan` or `WGPU_BACKEND=gl`.
+Needs a Vulkan driver (Mesa is fine), X11 or Wayland, GTK 3 (for file dialogs; the dev
+headers to build) and a C++ compiler (OpenH264 is compiled from source by `openh264-sys2`).
+The GPU backend is chosen by wgpu automatically. Force one with `WGPU_BACKEND=vulkan` or `WGPU_BACKEND=gl`.
 Logging: `RUST_LOG=om_app=debug,om_render=debug cargo run`.
 
 ## macOS (primary target)
@@ -42,6 +43,21 @@ the workflow later (`codesign --sign "Developer ID Application: …"` + `notaryt
 - Rendering uses Metal (through wgpu). Retina is handled by egui.
 - `Cmd` shortcuts come from `egui::Modifiers::COMMAND`, which is Cmd on macOS and Ctrl elsewhere.
 - Settings and last project: `~/Library/Application Support/OpenMapper/`.
+- File dialogs open as sheets on the main window (rfd async API, see architecture.md).
+- If something misbehaves, start the app from Terminal to see its log:
+  `/Applications/OpenMapper.app/Contents/MacOS/openmapper`
+
+## Video codec and licensing
+
+Video uses OpenH264 compiled from source (`openh264` crate, default `source` feature), so
+there are no system libraries to bundle on any platform. Note that Cisco's H.264 patent
+license only covers Cisco's own prebuilt binaries, not builds from source. Look into
+that before distributing builds publicly.
+The crate can also load Cisco's binary at runtime (`libloading` feature) if that matters later.
+
+Only H.264 is decoded today. HEVC (iPhone default), ProRes and HAP files are recognized and
+rejected with a message that says how to re-export them. A native AVFoundation backend on
+macOS would add HEVC/ProRes with hardware decoding (see roadmap).
 
 ## Windows
 

@@ -67,8 +67,13 @@ Tip: use the **Test Grid** source while aligning. Its lines make distortion obvi
   in the Sources panel to put it on all selected surfaces.
 - **+ Pattern** creates an animated pattern (gradient, checker, stripes, rings,
   noise, plasma, test grid). Click it in Sources to set its colors, scale, speed and angle.
-- **+ Image…**, or just **drag image files** onto the window. If surfaces are
-  selected, the image goes straight onto them.
+- **+ Media…** (or File → Import Images & Videos), or just **drag image and video
+  files** onto the window. If surfaces are selected, the media goes straight onto them.
+- **Videos** must be H.264 (`.mp4`, `.mov`, `.m4v`): what most cameras, phones in
+  "Most Compatible" mode and video exports produce. Videos loop and follow the play
+  clock: pause, restart (⏮) and play work for video like for everything else.
+  An iPhone's default HEVC video shows a ⚠ in Sources; re-export it as H.264
+  (QuickTime Player: File → Export As → 1080p).
 - **Texture → Mapping:** *Fit* puts the whole image on each surface; *Span* spreads
   one image across the whole canvas, so several surfaces together show one picture.
 
@@ -115,10 +120,27 @@ Just like Photoshop, a box with eight handles appears around the selection:
 Several surfaces scale and rotate together as one group, so you can resize a whole
 mapped object at once.
 
-## 8. Save
+## 8. Cut holes (Cutouts)
 
-`Cmd+S` saves an `.omap` project. OpenMapper reopens your last project on launch.
-Keep images next to the project file if you want to move the project to another computer.
+A **cutout** is a shape that removes everything below it: the window in a wall, a
+plant in front of the screen, the gap between two objects.
+
+- Click **✂ Cutout** in the toolbar (or Surface → Add Cutout). It appears on top of
+  the layers. Shape it like any surface (corners, `Cmd+T`, Shape: ellipse/triangle).
+- Or turn an existing surface into one: Properties → **Cutout → Cut out of layers below**.
+- A cutout cuts **every layer below it** in the Layers panel and nothing above it.
+  Drag it up or down the stack (`Cmd+[` / `Cmd+]`) to choose what it cuts.
+- **Feather** gives the hole a soft edge, **Opacity** makes it partial, and an
+  opacity pulse animates it.
+- In the editor, cutouts have a dashed pink outline.
+
+## 9. Save
+
+`Cmd+S` saves an `.omap` project; `Cmd+Shift+S` saves under a new name.
+OpenMapper reopens your last project on launch. When you are about to lose
+unsaved changes (New, Open, Quit), it asks first.
+Keep images and videos next to the project file if you want to move the project
+to another computer.
 
 ## Shortcut cheat sheet
 

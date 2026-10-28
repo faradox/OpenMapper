@@ -63,8 +63,38 @@ The fragment shader:
 Uniforms for all surfaces go into one buffer with dynamic offsets (stride = 256).
 
 Image sources are decoded with the `image` crate on the UI thread when first seen
-or when their path changes. That's fine for v0.1, but video needs a decoder thread
-(see roadmap).
+or when their path changes.
+
+**Cutouts** (`Surface::cutout`) are drawn like a solid surface whose color is the
+canvas background, with normal blending. The mask, feather and opacity give the hole
+its shape, so "cut out of everything below" needs no extra pass or stencil. Layer
+order decides what a cutout cuts.
+
+## Video
+
+`om-media::VideoPlayer` owns one decoder thread per video source:
+
+- On open, the `moov` box is parsed (`mp4` crate) and a `Timeline` is built from the
+  `stts`/`ctts`/`stss` tables: presentation order, frame start times, keyframes.
+  B-frames are handled by mapping decode order to display order.
+- Each frame, `TextureCache::sync` calls `seek(time)` with the transport time (the
+  video loops) and uploads the newest finished frame with `queue.write_texture`.
+- The thread decodes forward towards the requested frame (H.264 via OpenH264, YUV to
+  RGBA on the CPU). It restarts from the nearest keyframe when the target is behind it
+  or past the next keyframe. Only the requested frame is converted to RGBA.
+- When a frame is ready it calls the renderer's waker (`ctx.request_repaint`), so
+  scrubbing while paused still updates.
+
+Video time is the global transport time, so a source shared by several surfaces
+shows the same frame on all of them (per-surface time offset doesn't apply to video).
+
+## File dialogs
+
+All file dialogs are rfd's *async* dialogs (`dialogs.rs`): created on the UI thread,
+awaited on a helper thread, result polled once per frame. Blocking dialogs crash or
+misbehave on macOS inside winit's event handler. Questions ("Save changes?") and errors
+are egui modals (`Prompt`). Actions that would discard changes go through
+`OpenMapperApp::guard(Then)`, which asks first and resumes the action after saving.
 
 ## Editor interaction
 
@@ -96,10 +126,11 @@ Operations that need different values per surface (e.g. **Stagger**) are explici
 - App state (window size, last opened project): eframe persistence
   (`~/Library/Application Support/OpenMapper` on macOS).
 
-## Known limitations (v0.1)
+## Known limitations (v0.2)
 
 - Output window placement is manual (drag to projector, then `F`). No monitor picker yet.
-- Images only. No video, live camera, Syphon/Spout/NDI yet.
+- Video is H.264 only (no HEVC/ProRes/HAP yet), no audio, CPU decoding.
+  No live camera, Syphon/Spout/NDI yet.
 - Surfaces are four-corner only. No mesh warp, no bezier/polygon masks.
 - No timeline or keyframes. Animation is parametric (LFO/rates).
 - No mipmaps on image textures, so heavily minified images may shimmer.
