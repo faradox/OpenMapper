@@ -1,0 +1,24 @@
+[package]
+name = "om-app"
+description = "OpenMapper desktop application (editor + projector output)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "openmapper"
+path = "src/main.rs"
+
+[dependencies]
+om-core.workspace = true
+om-render.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+wgpu.workspace = true
+glam.workspace = true
+rfd.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true

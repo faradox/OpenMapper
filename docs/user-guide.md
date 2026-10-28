@@ -1,0 +1,110 @@
+# OpenMapper user guide: your first projection
+
+This guide assumes you know Photoshop and have never mapped anything. It takes
+about 15 minutes.
+
+## The idea in one paragraph
+
+A projector throws a flat rectangle of light. Projection mapping makes that light
+**land exactly on objects**: the faces of a box, a window frame, a sculpture.
+You do that by drawing **surfaces** (shapes with four draggable corners)
+in OpenMapper while looking at the real object, until each surface lines up
+with a face of the object. Then you fill the surfaces with **sources**
+(colors, patterns, images) and **animate** them.
+
+## The workspace
+
+| Area | Photoshop equivalent | What it does |
+| --- | --- | --- |
+| Center: canvas | Document window | Exactly what the projector shows. Drag shapes and corners here. |
+| Left top: **Layers** | Layers panel | Your surfaces. Top of the list = in front. Eye = show/hide, lock = protect. |
+| Left bottom: **Sources** | Swatches / Libraries | Colors, patterns and images you can put on surfaces. |
+| Right: **Properties** | Properties panel | Settings of the selected surface(s), or the canvas when nothing is selected. |
+| Toolbar | Options bar | Add shapes, play/pause, snapping, projector output. |
+
+## 1. Set up the canvas
+
+Click empty space so nothing is selected. Properties then shows the **Canvas**.
+Set the size to your projector's native resolution (often 1920×1080; see the
+**Preset** menu).
+
+## 2. Connect the projector
+
+1. Connect the projector and set macOS to **extend** the display (not mirror):
+   System Settings → Displays.
+2. In OpenMapper: **Output → Open Output Window** (`Cmd+Enter`).
+3. Drag that window onto the projector's screen and press **`F`** (or
+   double-click it). It goes full screen. `Esc` leaves full screen.
+
+With **Outlines on projector** on, the projector also shows thin outlines of all
+surfaces and the corners of the selected ones. That's very helpful while aligning.
+Turn it off for the show.
+
+## 3. Map an object
+
+The demo project contains three surfaces forming a box. Put a real box in front
+of the projector and:
+
+1. Click **Box Top** on the canvas (or in Layers). Its four corner handles appear.
+2. Drag each corner until the projected corner sits exactly on the real corner of
+   the box. Watch the box, not the screen.
+3. For pixel-precise tweaks, click a corner and use the **arrow keys**
+   (`Shift` = 10 px).
+4. Do the same for the other faces.
+
+Two helpers make this easy:
+
+- **Snapping:** corners snap to other surfaces' corners and the canvas corners.
+- **Welded corners:** once two faces share a corner (snapped together), dragging
+  that corner moves *both* faces, so the box stays closed.
+  Hold **Alt/Option** while dragging to move one corner alone or to avoid snapping.
+
+Tip: use the **Test Grid** source while aligning. Its lines make distortion obvious.
+
+## 4. Fill the surfaces
+
+- Select a surface and choose a **Source** in Properties, or double-click a source
+  in the Sources panel to put it on all selected surfaces.
+- **+ Pattern** creates an animated pattern (gradient, checker, stripes, rings,
+  noise, plasma, test grid). Click it in Sources to set its colors, scale, speed and angle.
+- **+ Image…**, or just **drag image files** onto the window. If surfaces are
+  selected, the image goes straight onto them.
+- **Texture → Mapping:** *Fit* puts the whole image on each surface; *Span* spreads
+  one image across the whole canvas, so several surfaces together show one picture.
+
+## 5. Animate
+
+Open the **Animate** section in Properties. Start with the presets: **Drift, Spin,
+Breathe, Pulse, Strobe, Rainbow**. Then fine-tune:
+
+| Control | Effect |
+| --- | --- |
+| Speed | Plays everything on this surface faster or slower. |
+| Scroll | Slides the texture continuously. |
+| Spin | Rotates the texture continuously. |
+| Hue cycle | Rotates colors around the color wheel. |
+| Zoom pulse | Texture breathes in and out (amount, rate, waveform). |
+| Opacity pulse | Surface fades or flashes. A *Square* wave is a strobe. |
+| Time offset | Shifts this surface's animation in time. |
+
+**Chase effects:** select several surfaces *in the order you want the effect to
+travel* (Shift-click one after the other), then press **Stagger** in Animate.
+Each surface gets a slightly later time offset, so the motion ripples across them.
+
+## 6. Work with many surfaces at once
+
+- Shift-click or Cmd-click to add surfaces to the selection, or drag a marquee
+  over empty canvas. In Layers, Shift-click selects a range.
+- With several selected, Properties shows the last one you clicked. **Any value you
+  change is applied to all of them**, and only that value. Everything else stays
+  as it was on each surface.
+- Drag any selected surface to move them all. `Cmd+D` duplicates, `Delete` removes.
+
+## 7. Save
+
+`Cmd+S` saves an `.omap` project. OpenMapper reopens your last project on launch.
+Keep images next to the project file if you want to move the project to another computer.
+
+## Shortcut cheat sheet
+
+See the table in the [README](../README.md#keyboard).

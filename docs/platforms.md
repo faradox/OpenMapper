@@ -1,0 +1,60 @@
+# Platforms and builds
+
+## Linux (development)
+
+```sh
+cargo run              # debug build, deps optimized
+cargo run --release
+```
+
+Needs a Vulkan driver (Mesa is fine) and X11 or Wayland. The GPU backend is chosen
+by wgpu automatically. Force one with `WGPU_BACKEND=vulkan` or `WGPU_BACKEND=gl`.
+Logging: `RUST_LOG=om_app=debug,om_render=debug cargo run`.
+
+## macOS (primary target)
+
+Built by GitHub Actions on `macos-latest` (see `.github/workflows/ci.yml`):
+
+- `scripts/bundle-macos.sh` builds `aarch64` and `x86_64`, merges them with `lipo`
+  into a universal binary, wraps it in `OpenMapper.app` (Info.plist from
+  `packaging/macos/`), ad-hoc signs it and zips it.
+- Every push uploads the zip as a workflow artifact
+  (Actions → run → *OpenMapper-macos-universal*).
+- Pushing a `v*` tag also attaches the zip to a GitHub release.
+
+### First launch of an unsigned build
+
+The app is ad-hoc signed but **not notarized**, so Gatekeeper blocks a
+double-click on first launch. Either:
+
+- right-click `OpenMapper.app` → **Open** → **Open**, or
+- run this once in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/OpenMapper.app
+```
+
+Proper signing and notarization need an Apple Developer ID ($99/yr) and can be added to
+the workflow later (`codesign --sign "Developer ID Application: …"` + `notarytool`).
+
+### Notes
+
+- Rendering uses Metal (through wgpu). Retina is handled by egui.
+- `Cmd` shortcuts come from `egui::Modifiers::COMMAND`, which is Cmd on macOS and Ctrl elsewhere.
+- Settings and last project: `~/Library/Application Support/OpenMapper/`.
+
+## Windows
+
+CI builds `openmapper.exe` on `windows-latest` (artifact *OpenMapper-windows-x64*).
+
+To cross-compile from Linux, one option is the GNU target with MinGW:
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+# plus a MinGW-w64 toolchain from your distro, e.g. on Void: cross-x86_64-w64-mingw32
+cargo build --release -p om-app --target x86_64-pc-windows-gnu
+```
+
+Or the MSVC target with `cargo-xwin` (`cargo install cargo-xwin`, then
+`cargo xwin build --release -p om-app --target x86_64-pc-windows-msvc`).
+Rendering uses DX12 or Vulkan.
