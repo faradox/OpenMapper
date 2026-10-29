@@ -22,13 +22,15 @@ struct SurfaceUniforms {
     misc: vec4<f32>,       // opacity, hue shift (turns), feather, mask
     pal: vec4<f32>,        // stop count, cyclic, detail, surface aspect (w / h)
     stops: array<vec4<f32>, 6>,
-    shape: vec4<f32>,      // outline point count
+    shape: vec4<f32>,      // outline point count, backdrop blend mode
     points: array<vec4<f32>, 64>, // outline in surface uv, two points per vec4
 };
 
 @group(0) @binding(0) var<uniform> u: SurfaceUniforms;
 @group(1) @binding(0) var src_tex: texture_2d<f32>;
 @group(1) @binding(1) var src_samp: sampler;
+// What is already drawn under this surface (only for the backdrop blend modes).
+@group(2) @binding(0) var backdrop: texture_2d<f32>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -436,6 +438,233 @@ fn field(kind: u32, uv: vec2<f32>, t: f32) -> vec2<f32> {
             let head = smoothstep(0.96, 1.0, s);
             return vec2<f32>(1.0, (trail * mix(0.35, 1.0, glyph) + head) * cell);
         }
+        // Melt: space folded over itself by layers of sine waves.
+        case 27u: {
+            var q = p * scale;
+            let layers = 3 + i32(detail * 7.0);
+            for (var k = 1; k <= 10; k++) {
+                if k <= layers {
+                    let kf = f32(k);
+                    q += vec2<f32>(
+                        sin(q.y * kf * 0.9 + tt + kf * 1.3),
+                        cos(q.x * kf * 0.9 - tt * 0.8 + kf * 0.7),
+                    ) * (0.7 / kf);
+                }
+            }
+            let v = 0.5 + 0.5 * sin(q.x * 0.8 + q.y * 0.6);
+            return vec2<f32>(v, 0.8 + 0.2 * sin(q.x - q.y));
+        }
+        // Fractal lace: the "Kali" fractal, abs-folded and inverted, so it
+        // mirrors itself into lace that keeps rearranging.
+        case 28u: {
+            var z = rot2(tt * 0.15) * p * (2.5 / max(scale, 0.3));
+            let c = vec2<f32>(0.75 + 0.12 * sin(tt * 0.31), 0.6 + 0.12 * cos(tt * 0.23));
+            let iters = 5 + i32(detail * 10.0);
+            var trap = 1e3;
+            for (var k = 0; k < 15; k++) {
+                if k < iters {
+                    z = abs(z) / max(dot(z, z), 1e-4) - c;
+                    trap = min(trap, abs(z.x * z.y));
+                }
+            }
+            let glow = exp(-trap * 6.0);
+            return vec2<f32>(log(1.0 + length(z)) * 0.5 + glow * 0.4, mix(0.08, 1.0, glow));
+        }
+        // Quasicrystal: plane waves in n directions, never quite repeating.
+        case 29u: {
+            let n = 3 + i32(detail * 8.0);
+            let q = p * scale * 16.0;
+            var v = 0.0;
+            for (var k = 0; k < 11; k++) {
+                if k < n {
+                    let th = f32(k) * TAU * 0.5 / f32(n);
+                    v += cos(dot(q, vec2<f32>(cos(th), sin(th))) + tt * TAU * 0.5);
+                }
+            }
+            v /= f32(n);
+            return vec2<f32>(v * 1.2 + 0.5 + tt * 0.05, 1.0);
+        }
+        // Caustics: light focused by a moving water surface.
+        case 30u: {
+            let q = p * scale * 2.0 - 250.0;
+            var i = q;
+            var c = 1.0;
+            let inten = 0.005;
+            for (var n = 0; n < 5; n++) {
+                let t2 = tt * (1.0 - 3.5 / f32(n + 1));
+                i = q + vec2<f32>(cos(t2 - i.x) + sin(t2 + i.y), sin(t2 - i.y) + cos(t2 + i.x));
+                c += 1.0 / length(vec2<f32>(q.x / (sin(i.x + t2) / inten), q.y / (cos(i.y + t2) / inten)));
+            }
+            c = 1.17 - pow(c / 5.0, 1.4);
+            let v = clamp(pow(abs(c), mix(4.0, 14.0, detail)), 0.0, 1.0);
+            return vec2<f32>(0.25 + 0.75 * v, 1.0);
+        }
+        // Retro grid: synthwave floor racing toward a banded sun.
+        case 31u: {
+            let q = ruv + 0.5;
+            let horizon = 0.58;
+            let dy = q.y - horizon;
+            let z = 0.3 / max(dy, 1e-3);
+            let gx = (q.x - 0.5) * aspect * z * scale * 2.0;
+            let gz = z * scale + tt * 2.0;
+            let lines = max(aa_line(gx, 1.5), aa_line(gz, 1.5)) * smoothstep(0.0, 0.2, dy);
+            let ground = vec2<f32>(mix(0.15, 0.55, lines), mix(0.2, 1.0, lines));
+
+            let sun_r = 0.12 + detail * 0.2;
+            let sc = vec2<f32>(0.5, horizon - sun_r * 0.55);
+            let sd = length((q - sc) * vec2<f32>(aspect, 1.0)) / sun_r;
+            let sy = (q.y - sc.y) / sun_r;
+            // Gaps that widen toward the bottom of the sun.
+            let gap_x = fract(sy * 7.0 - tt * 0.4);
+            let gap_w = clamp(sy, 0.0, 1.0) * 0.6;
+            let gfw = max(fwidth(sy * 7.0), 1e-4);
+            let solid = smoothstep(gap_w - gfw, gap_w + gfw, gap_x);
+            let sfw = max(fwidth(sd), 1e-4);
+            let disk = (1.0 - smoothstep(1.0 - sfw, 1.0 + sfw, sd)) * select(1.0, solid, sy > 0.0);
+            let sky = vec2<f32>(0.25, 0.15 + 0.6 * exp(dy * 6.0) + 0.3 * exp(-sd * 1.5));
+            let sun = vec2<f32>(mix(1.0, 0.55, clamp(sy * 0.5 + 0.5, 0.0, 1.0)), 1.0);
+            return select(mix(sky, sun, disk), ground, dy > 0.0);
+        }
+        // Galaxy: spiral arms of dust around a bright core, with stars.
+        case 32u: {
+            let zr = r * 4.0 / max(scale, 0.5);
+            let arms = 2.0 + floor(detail * 4.0);
+            let spiral = a * TAU * arms - log(max(zr, 1e-3)) * 4.0 + tt;
+            let arm = pow(0.5 + 0.5 * cos(spiral), 3.0);
+            let dust = fbm(rot2(-tt / arms) * p * 10.0 / max(scale, 0.5));
+            let disk = exp(-zr * 1.4);
+            let core = exp(-zr * 9.0);
+            let sg = p * 90.0;
+            let cell = floor(sg);
+            let h = hash2(cell);
+            let star = (1.0 - smoothstep(0.0, 0.25, length(fract(sg) - 0.5)))
+                * step(0.96, h) * (0.6 + 0.4 * sin(tt * 3.0 + h * 60.0));
+            let density = disk * (0.15 + 1.1 * arm) * (0.4 + dust) + core * 1.5 + star;
+            return vec2<f32>(0.2 + arm * disk * 0.5 + core * 0.8 + star * 0.3, density);
+        }
+        // Electric: crackling lines along the contours of moving noise.
+        case 33u: {
+            let q = p * scale * 0.8;
+            let n1 = fbm(q + vec2<f32>(tt * 0.3, -tt * 0.2));
+            let n = fbm(q * 1.3 + vec2<f32>(n1 * 2.0, tt * 0.5));
+            let line = abs(fract(n * 3.0) - 0.5);
+            let glow = clamp(pow((0.01 + detail * 0.04) / max(line, 1e-3), 1.3), 0.0, 1.5);
+            return vec2<f32>(0.3 + 0.7 * min(glow, 1.0), glow);
+        }
+        // Bubbles: iridescent soap bubbles rising in three layers.
+        case 34u: {
+            var glow = 0.0;
+            var pos = 0.0;
+            for (var l = 0; l < 3; l++) {
+                let lf = f32(l);
+                var g = p * scale * (1.0 + lf * 0.6) + vec2<f32>(lf * 7.1, tt * (0.6 + lf * 0.25));
+                g.x += sin(g.y * 0.9 + lf + tt * 0.5) * 0.15;
+                let id = floor(g);
+                let h = hash2(id + lf * 17.0);
+                // Radius + offset stay below half a cell, so no bubble is cut off.
+                let f = fract(g) - 0.5 - (hash22(id + 4.0) - 0.5) * 0.36;
+                let rad = mix(0.14, 0.3, hash2(id + 9.0));
+                let d = length(f) / rad;
+                // fwidth(d) jumps at cell borders; g is continuous.
+                let aa = max(length(fwidth(g)) / rad, 1e-3);
+                let inside = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, d);
+                let rim = smoothstep(0.7, 1.0, d) * inside;
+                let shine = 1.0 - smoothstep(0.0, 0.2, length(f / rad + vec2<f32>(0.35)));
+                let b = (rim + inside * 0.15 + shine * 0.8) * step(0.9 - detail * 0.8, h) * (0.8 + lf * 0.2);
+                glow += b;
+                pos += b * (h * 0.5 + d * 0.7 + lf * 0.15);
+            }
+            return vec2<f32>(pos / max(glow, 1e-3), glow);
+        }
+        // Mandala: rings of petals turning in alternating directions.
+        case 35u: {
+            let petals = 4.0 + floor(detail * 12.0);
+            let rr = r * scale;
+            let ring = floor(rr);
+            let fr = fract(rr);
+            let dir = select(-1.0, 1.0, ring - 2.0 * floor(ring * 0.5) < 0.5);
+            let k = petals * (1.0 + floor(ring * 0.5));
+            let m = abs(fract((a + tt * 0.04 * dir) * k) - 0.5) * 2.0;
+            let edge = 0.1 + 0.85 * cos(m * TAU * 0.25);
+            let d = fr - edge;
+            let w = fwidth(rr) + 2.7 * k * aw;
+            let fill = 1.0 - smoothstep(-w, w, d);
+            let outline = 1.0 - smoothstep(0.0, w * 1.5, abs(d) - 0.015);
+            let inner = 1.0 - smoothstep(0.0, w * 1.5, abs(fr - edge * 0.55) - 0.01);
+            let dots = 1.0 - smoothstep(0.0, w * 1.5, length(vec2<f32>((1.0 - m) * 0.3, fr - 0.92)) - 0.04);
+            let lines = max(max(outline, inner), dots);
+            return vec2<f32>(ring * 0.2 + fill * 0.25 + m * 0.15 - tt * 0.05, max(fill * 0.45, lines) + 0.1);
+        }
+        // Ink blot: a mirrored Rorschach shape that keeps changing.
+        case 36u: {
+            let q = vec2<f32>(abs(p.x), p.y) * scale * 0.5;
+            let warp = vec2<f32>(fbm(q + vec2<f32>(0.0, tt * 0.15)), fbm(q + vec2<f32>(4.7, 1.9) - tt * 0.1));
+            let f = fbm(q * 1.4 + warp * (1.0 + detail * 2.5) + vec2<f32>(0.0, tt * 0.05));
+            let v = f + 0.3 - length(p * vec2<f32>(0.8, 1.0)) * 0.5;
+            let fw = max(fwidth(v), 1e-4);
+            let blot = smoothstep(0.45 - fw, 0.45 + fw, v);
+            let inner = smoothstep(0.5, 0.75, v);
+            return vec2<f32>(0.3 + inner * 0.6 + warp.x * 0.3, blot * (0.75 + 0.25 * inner));
+        }
+        // Silk: two ribbons of fine glowing strands.
+        case 37u: {
+            let q = ruv + 0.5;
+            let strands = 4 + i32(detail * 20.0);
+            let px = max(fwidth(q.y), 1e-4);
+            let x = q.x * scale * 0.5;
+            var glow = 0.0;
+            var pos = 0.0;
+            for (var k = 0; k < 24; k++) {
+                if k < strands {
+                    let kf = f32(k) / f32(strands);
+                    let rib = f32(k % 2);
+                    let y = 0.5 + (rib - 0.5) * 0.18
+                        + 0.22 * sin(x * 2.0 + tt + kf * 1.5 + rib * 2.7) * cos(x * 0.7 - tt * 0.6 + kf * 0.8)
+                        + (kf - 0.5) * 0.2 * sin(x * 1.3 + tt * 0.4 + rib);
+                    let d = abs(q.y - y);
+                    let g = (1.0 - smoothstep(0.0, px * 2.0, d)) * 0.7 + exp(-d / (px * 12.0)) * 0.12;
+                    glow += g;
+                    pos += g * (kf * 0.6 + rib * 0.4);
+                }
+            }
+            return vec2<f32>(pos / max(glow, 1e-3) + q.x * 0.3, 1.0 - exp(-glow * 1.5));
+        }
+        // Glitch: blocks and slices of a broken signal.
+        case 38u: {
+            let q = ruv + 0.5;
+            let tick = floor(tt * 8.0);
+            let row = floor(q.y * scale * 6.0);
+            let jump = hash2(vec2<f32>(row, tick)) > 1.0 - detail * 0.5;
+            let x = q.x + select(0.0, (hash2(vec2<f32>(row, tick + 7.0)) - 0.5) * 0.4 * (0.3 + detail), jump);
+            let blk = floor(vec2<f32>(x * scale * 2.0, q.y * scale));
+            let hb = hash2(blk + vec2<f32>(floor(tt * 2.0) * 0.37, 0.0));
+            let fine = hash2(floor(vec2<f32>(x * scale * 24.0, q.y * scale * 6.0)) + tick);
+            let scan = 0.75 + 0.25 * sin(q.y * u.canvas.y * 1.5);
+            let on = step(0.3, hb) * mix(0.6, 1.0, step(0.5, fine));
+            return vec2<f32>(hb + select(0.0, 0.5, jump), (on + select(0.0, 0.5, jump)) * scan);
+        }
+        // Infinite zoom: twisted squares falling inward forever.
+        case 39u: {
+            let rr = max(r, 1e-4);
+            let q = rot2(log(rr) * detail * 3.0 + tt * 0.3) * p;
+            let sq = max(max(abs(q.x), abs(q.y)), 1e-4);
+            let x = log(sq) * scale * 0.5 - tt;
+            let s = aa_square_w(x, fwidth(x));
+            return vec2<f32>(x * 0.15 + s * 0.1, mix(0.25, 1.0, s) * smoothstep(0.0, 0.02, r));
+        }
+        // Halftone: a dot screen whose dots swell with traveling waves.
+        case 40u: {
+            let k = scale * 3.0;
+            let g = rot2(0.785398) * p * k;
+            let id = floor(g) + 0.5;
+            let f = g - id;
+            let c = rot2(-0.785398) * id / k;
+            let wave = 0.5 + 0.5 * sin(length(c) * 10.0 - tt * 3.0 + sin(c.x * 4.0 + tt) * 1.5);
+            let rad = wave * (0.2 + detail * 0.5);
+            let fw = length(fwidth(g)) * 0.7;
+            let dot_ = 1.0 - smoothstep(-fw, fw, length(f) - rad);
+            return vec2<f32>(wave * 0.8 + 0.1, dot_);
+        }
         default: {
             return vec2<f32>(0.0, 1.0);
         }
@@ -459,6 +688,87 @@ fn test_grid(uv: vec2<f32>) -> vec4<f32> {
     let blob = 1.0 - smoothstep(0.035, 0.04, length(fract(uv * 2.0) - 0.5) * 0.5);
     c = vec4<f32>(mix(c.rgb, qc, blob * 0.9), c.a);
     return c;
+}
+
+// ---- Blend modes (backdrop `cb`, source `cs`, both straight sRGB) ---------
+
+fn screen(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    return cb + cs - cb * cs;
+}
+
+fn hard_light(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    return select(screen(cb, 2.0 * cs - 1.0), cb * 2.0 * cs, cs <= vec3<f32>(0.5));
+}
+
+fn color_dodge(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    let d = select(min(vec3<f32>(1.0), cb / max(1.0 - cs, vec3<f32>(1e-5))), vec3<f32>(1.0), cs >= vec3<f32>(1.0));
+    return select(d, vec3<f32>(0.0), cb <= vec3<f32>(0.0));
+}
+
+fn color_burn(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    let d = select(1.0 - min(vec3<f32>(1.0), (1.0 - cb) / max(cs, vec3<f32>(1e-5))), vec3<f32>(0.0), cs <= vec3<f32>(0.0));
+    return select(d, vec3<f32>(1.0), cb >= vec3<f32>(1.0));
+}
+
+fn soft_light(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    let d = select(sqrt(cb), ((16.0 * cb - 12.0) * cb + 4.0) * cb, cb <= vec3<f32>(0.25));
+    return select(cb + (2.0 * cs - 1.0) * (d - cb), cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb), cs <= vec3<f32>(0.5));
+}
+
+fn lum(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.3, 0.59, 0.11));
+}
+
+fn set_lum(c: vec3<f32>, l: f32) -> vec3<f32> {
+    let o = c + (l - lum(c));
+    let ol = lum(o);
+    let n = min(min(o.r, o.g), o.b);
+    let x = max(max(o.r, o.g), o.b);
+    var r = o;
+    if n < 0.0 {
+        r = ol + (r - ol) * ol / max(ol - n, 1e-5);
+    }
+    if x > 1.0 {
+        r = ol + (r - ol) * (1.0 - ol) / max(x - ol, 1e-5);
+    }
+    return r;
+}
+
+fn sat(c: vec3<f32>) -> f32 {
+    return max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
+}
+
+fn set_sat(c: vec3<f32>, s: f32) -> vec3<f32> {
+    let n = min(min(c.r, c.g), c.b);
+    let range = sat(c);
+    return select(vec3<f32>(0.0), (c - n) * s / max(range, 1e-5), range > 1e-5);
+}
+
+// Mode numbers come from `backdrop_index` in lib.rs.
+fn blend(mode: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    switch mode {
+        case 1u: { return min(cb, cs); }
+        case 2u: { return max(cb, cs); }
+        case 3u: { return color_burn(cb, cs); }
+        case 4u: { return max(cb + cs - 1.0, vec3<f32>(0.0)); }
+        case 5u: { return color_dodge(cb, cs); }
+        case 6u: { return hard_light(cs, cb); }
+        case 7u: { return soft_light(cb, cs); }
+        case 8u: { return hard_light(cb, cs); }
+        case 9u: {
+            return select(color_dodge(cb, 2.0 * cs - 1.0), color_burn(cb, 2.0 * cs), cs <= vec3<f32>(0.5));
+        }
+        case 10u: { return cb + 2.0 * cs - 1.0; }
+        case 11u: { return select(max(cb, 2.0 * cs - 1.0), min(cb, 2.0 * cs), cs <= vec3<f32>(0.5)); }
+        case 12u: { return select(vec3<f32>(0.0), vec3<f32>(1.0), cb + cs >= vec3<f32>(1.0)); }
+        case 13u: { return abs(cb - cs); }
+        case 14u: { return cb / max(cs, vec3<f32>(1e-5)); }
+        case 15u: { return set_lum(set_sat(cs, sat(cb)), lum(cb)); }
+        case 16u: { return set_lum(set_sat(cb, sat(cs)), lum(cb)); }
+        case 17u: { return set_lum(cs, lum(cb)); }
+        case 18u: { return set_lum(cb, lum(cs)); }
+        default: { return cs; }
+    }
 }
 
 fn hue_rotate(c: vec3<f32>, turns: f32) -> vec3<f32> {
@@ -551,7 +861,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         color = generator(kind, tuv, u.canvas.z);
     }
 
-    let rgb = clamp(hue_rotate(color.rgb, u.misc.y), vec3<f32>(0.0), vec3<f32>(1.0)) * u.tint.rgb;
+    var rgb = clamp(hue_rotate(color.rgb, u.misc.y), vec3<f32>(0.0), vec3<f32>(1.0)) * u.tint.rgb;
     let alpha = color.a * u.tint.a * u.misc.x * coverage;
+    // Backdrop blend modes (W3C compositing): blend with what's below, then
+    // composite normally. Fixed-function modes have mode 0.
+    let mode = u32(u.shape.y);
+    if mode > 0u {
+        let bd = textureLoad(backdrop, vec2<i32>(in.pos.xy), 0);
+        let cb = bd.rgb / max(bd.a, 1e-5);
+        rgb = mix(rgb, clamp(blend(mode, cb, rgb), vec3<f32>(0.0), vec3<f32>(1.0)), bd.a);
+    }
     return vec4<f32>(rgb * alpha, alpha);
 }

@@ -193,10 +193,19 @@ fn surface_props(ui: &mut Ui, app: &mut OpenMapperApp, s: &mut Surface, count: u
                 color_edit(ui, &mut s.tint);
                 ui.end_row();
 
-                prop_label(ui, "Blend", "How this surface combines with the ones behind it");
+                prop_label(
+                    ui,
+                    "Blend",
+                    "How this surface combines with the ones behind it (Shift + / Shift - to cycle)",
+                );
                 egui::ComboBox::from_id_salt("blend").selected_text(s.blend.label()).show_ui(ui, |ui| {
-                    for b in BlendMode::ALL {
-                        ui.selectable_value(&mut s.blend, b, b.label());
+                    for (i, group) in BlendMode::GROUPS.iter().enumerate() {
+                        if i > 0 {
+                            ui.separator();
+                        }
+                        for &b in *group {
+                            ui.selectable_value(&mut s.blend, b, b.label());
+                        }
                     }
                 });
                 ui.end_row();

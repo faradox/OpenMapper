@@ -7,7 +7,7 @@ animate them. The interface feels familiar to anyone who knows Photoshop.
 Written in Rust (egui + wgpu). macOS is the primary target; Linux is the
 development platform; Windows builds come for free.
 
-> Status: **v0.3.** Enough to map a box, a wall or a few shapes, fill them with
+> Status: **v0.4.** Enough to map a box, a wall or a few shapes, fill them with
 > shaders, images or video, and make them move. See [docs/roadmap.md](docs/roadmap.md)
 > for what comes next.
 
@@ -35,9 +35,10 @@ development platform; Windows builds come for free.
   anything in front of the wall). Works with ellipse/triangle shapes, feather and opacity.
 - **Corner snapping** and **welded corners**: faces that share a corner move together,
   which makes mapping a cube easy. Hold Alt/Option to bypass either.
-- **Shader Library** (`Cmd+L`): 26 animated, live-previewed shaders (tunnel, kaleidoscope,
-  hypno spiral, liquid, Julia fractal, lava lamp, fire, aurora, warp speed, digital rain…),
-  each with color palettes and an extra control, all editable after adding.
+- **Shader Library** (`Cmd+L`): 42 animated, live-previewed presets of 39 shaders (tunnel,
+  kaleidoscope, melt, fractal lace, quasicrystal, mandala, infinite zoom, Julia fractal,
+  lava lamp, caustics, silk, ink blot, galaxy, retro grid, electric, digital rain…), each
+  with 14 color palettes and an extra control, all editable after adding.
 - **Sources**: solid colors, the GPU shaders above (including a calibration test grid),
   **images** (PNG/JPEG/GIF/WebP/BMP/TGA)
   and **videos** (H.264 in MP4/MOV, looping, synced to the play clock). Import from the
@@ -46,7 +47,9 @@ development platform; Windows builds come for free.
   mapping, plus texture offset, scale, rotation and flip.
 - **Animate**: scroll, spin, hue cycle, zoom pulse and opacity pulse/strobe (LFOs with
   sine/triangle/saw/square), per-surface speed and time offset, presets, **Stagger**.
-- Opacity, tint, feathered edges and blend modes (Normal, Add, Screen, Multiply).
+- Opacity, tint, feathered edges and all 24 **Photoshop blend modes** (Multiply, Screen,
+  Overlay, Soft Light, Color Dodge, Difference, Hue, Color, Luminosity…), applied
+  against everything below the surface. `Shift +` / `Shift -` cycles them.
 - **Projector output window**: drag it to the projector and press `F` for full screen.
   Optional outlines on the projector help with aligning corners on the real object.
 - Undo/redo, save/open (`.omap`, JSON), reopens the last project on launch
@@ -77,6 +80,7 @@ macOS bundles (built by GitHub Actions) and Windows.
 | `P` | Pen: draw a free-form shape (`Enter` finish, `Esc` cancel) |
 | Double-click a free-form shape | Edit its points (`Delete` removes the selected point) |
 | `Cmd+L` | Shader Library |
+| `Shift +` / `Shift -` | Next / previous blend mode on the selection |
 | `Cmd+T` | Free Transform (then `Enter` apply, `Esc` cancel) |
 | Click / Shift-click / Cmd-click | Select / add to selection |
 | Drag on empty canvas | Marquee select |

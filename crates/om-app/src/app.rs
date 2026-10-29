@@ -62,6 +62,8 @@ pub enum Action {
     Duplicate,
     Delete,
     Restack(i32),
+    /// Next (1) or previous (-1) blend mode on the selected surfaces.
+    CycleBlend(i32),
     RestackExtreme {
         front: bool,
     },
@@ -271,6 +273,13 @@ impl OpenMapperApp {
             if i.consume_key(Modifiers::COMMAND, Key::Y) {
                 acts.push(Action::Redo);
             }
+            // Photoshop: Shift + / Shift - step through blend modes.
+            if i.consume_key(Modifiers::SHIFT, Key::Equals) || i.consume_key(Modifiers::SHIFT, Key::Plus) {
+                acts.push(Action::CycleBlend(1));
+            }
+            if i.consume_key(Modifiers::SHIFT, Key::Minus) {
+                acts.push(Action::CycleBlend(-1));
+            }
             if i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::NONE, Key::Backspace) {
                 acts.push(if pen {
                     Action::RemovePenPoint
@@ -459,6 +468,18 @@ impl OpenMapperApp {
                 self.dialogs.start(ctx, Purpose::ReplaceMedia(id), dialog, Kind::PickFile);
             }
             Action::Nudge(delta) => self.nudge(delta),
+            Action::CycleBlend(step) => {
+                // All selected surfaces take the primary's next mode, like a combo pick.
+                let primary = self.editor.selection.primary().and_then(|id| self.doc.project.surface(id));
+                if let Some(next) = primary.map(|s| s.blend.cycle(step)) {
+                    for id in &self.editor.selection.surfaces {
+                        if let Some(s) = self.doc.project.surface_mut(*id).filter(|s| !s.locked && !s.cutout)
+                        {
+                            s.blend = next;
+                        }
+                    }
+                }
+            }
             Action::FreeTransform => {
                 if self.editor.transform.is_some() {
                     self.editor.apply_transform();

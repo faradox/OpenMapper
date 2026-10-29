@@ -20,6 +20,18 @@ Decisions:
 - → docs/trackers/NNNN-....md
 ```
 
+## 2026-10-29: v0.3
+
+Pain points / wishes (in her words where possible):
+- Liked the Shader Library: "add some more shaders, make them pretty and trippy".
+- "Add some more blend modes."
+
+Decisions:
+- 14 more shaders (psychedelic, organic, cosmic) and 3 palettes, tuned by eye in the library.
+- All of Photoshop's blend modes in Photoshop's order, since that's her reference;
+  modes that need the backdrop read it from a copy of the canvas.
+  → [trackers/0005-shaders-blend-modes.md](trackers/0005-shaders-blend-modes.md)
+
 ## 2026-10-29: v0.2
 
 Pain points / wishes (in her words where possible):

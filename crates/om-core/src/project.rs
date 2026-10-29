@@ -76,10 +76,24 @@ pub enum Pattern {
     Sunburst,
     OpArt,
     Rain,
+    Melt,
+    Kali,
+    Quasicrystal,
+    Caustics,
+    RetroGrid,
+    Galaxy,
+    Electric,
+    Bubbles,
+    Mandala,
+    InkBlot,
+    Silk,
+    Glitch,
+    Zoom,
+    Halftone,
 }
 
 impl Pattern {
-    pub const ALL: [Pattern; 25] = [
+    pub const ALL: [Pattern; 39] = [
         Pattern::Gradient,
         Pattern::Checker,
         Pattern::Stripes,
@@ -105,6 +119,20 @@ impl Pattern {
         Pattern::Sunburst,
         Pattern::OpArt,
         Pattern::Rain,
+        Pattern::Melt,
+        Pattern::Kali,
+        Pattern::Quasicrystal,
+        Pattern::Caustics,
+        Pattern::RetroGrid,
+        Pattern::Galaxy,
+        Pattern::Electric,
+        Pattern::Bubbles,
+        Pattern::Mandala,
+        Pattern::InkBlot,
+        Pattern::Silk,
+        Pattern::Glitch,
+        Pattern::Zoom,
+        Pattern::Halftone,
     ];
 
     pub fn label(self) -> &'static str {
@@ -134,6 +162,20 @@ impl Pattern {
             Pattern::Sunburst => "Sunburst",
             Pattern::OpArt => "Op Art",
             Pattern::Rain => "Digital Rain",
+            Pattern::Melt => "Melt",
+            Pattern::Kali => "Fractal Lace",
+            Pattern::Quasicrystal => "Quasicrystal",
+            Pattern::Caustics => "Caustics",
+            Pattern::RetroGrid => "Retro Grid",
+            Pattern::Galaxy => "Galaxy",
+            Pattern::Electric => "Electric",
+            Pattern::Bubbles => "Bubbles",
+            Pattern::Mandala => "Mandala",
+            Pattern::InkBlot => "Ink Blot",
+            Pattern::Silk => "Silk",
+            Pattern::Glitch => "Glitch",
+            Pattern::Zoom => "Infinite Zoom",
+            Pattern::Halftone => "Halftone",
         }
     }
 
@@ -158,6 +200,20 @@ impl Pattern {
             Pattern::Sunburst => "Color sweep",
             Pattern::OpArt => "Warp",
             Pattern::Rain => "Trail length",
+            Pattern::Melt => "Warp",
+            Pattern::Kali => "Depth",
+            Pattern::Quasicrystal => "Symmetry",
+            Pattern::Caustics => "Sharpness",
+            Pattern::RetroGrid => "Sun size",
+            Pattern::Galaxy => "Arms",
+            Pattern::Electric => "Glow",
+            Pattern::Bubbles => "Amount",
+            Pattern::Mandala => "Petals",
+            Pattern::InkBlot => "Spread",
+            Pattern::Silk => "Strands",
+            Pattern::Glitch => "Chaos",
+            Pattern::Zoom => "Twist",
+            Pattern::Halftone => "Dot size",
             _ => return None,
         })
     }
@@ -185,10 +241,13 @@ pub enum Palette {
     Ice,
     Candy,
     Mono,
+    Vapor,
+    Gold,
+    Cosmic,
 }
 
 impl Palette {
-    pub const ALL: [Palette; 11] = [
+    pub const ALL: [Palette; 14] = [
         Palette::Duotone,
         Palette::Rainbow,
         Palette::Neon,
@@ -199,6 +258,9 @@ impl Palette {
         Palette::Acid,
         Palette::Ice,
         Palette::Candy,
+        Palette::Vapor,
+        Palette::Gold,
+        Palette::Cosmic,
         Palette::Mono,
     ];
 
@@ -215,6 +277,9 @@ impl Palette {
             Palette::Ice => "Ice",
             Palette::Candy => "Candy",
             Palette::Mono => "Black & white",
+            Palette::Vapor => "Vaporwave",
+            Palette::Gold => "Gold",
+            Palette::Cosmic => "Cosmic",
         }
     }
 
@@ -294,6 +359,28 @@ impl Palette {
                 [1.0, 0.6, 0.65],
             ]),
             Palette::Mono => rgb(&[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]),
+            Palette::Vapor => rgb(&[
+                [0.08, 0.0, 0.2],
+                [0.95, 0.25, 0.7],
+                [0.45, 0.35, 1.0],
+                [0.2, 0.9, 1.0],
+                [1.0, 0.92, 0.95],
+            ]),
+            Palette::Gold => rgb(&[
+                [0.02, 0.01, 0.0],
+                [0.35, 0.15, 0.02],
+                [0.8, 0.5, 0.1],
+                [1.0, 0.82, 0.35],
+                [1.0, 0.97, 0.85],
+            ]),
+            Palette::Cosmic => rgb(&[
+                [0.0, 0.0, 0.05],
+                [0.1, 0.05, 0.35],
+                [0.5, 0.1, 0.6],
+                [0.95, 0.35, 0.45],
+                [1.0, 0.75, 0.45],
+                [1.0, 1.0, 0.95],
+            ]),
         }
     }
 }
@@ -392,18 +479,85 @@ pub enum BlendMode {
     Add,
     Screen,
     Multiply,
+    Darken,
+    ColorBurn,
+    LinearBurn,
+    Lighten,
+    ColorDodge,
+    Overlay,
+    SoftLight,
+    HardLight,
+    VividLight,
+    LinearLight,
+    PinLight,
+    HardMix,
+    Difference,
+    Exclusion,
+    Subtract,
+    Divide,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
 }
 
 impl BlendMode {
-    pub const ALL: [BlendMode; 4] =
-        [BlendMode::Normal, BlendMode::Add, BlendMode::Screen, BlendMode::Multiply];
+    /// Photoshop's groups and order: darken, lighten, contrast, inversion, color.
+    pub const GROUPS: [&[BlendMode]; 6] = [
+        &[BlendMode::Normal],
+        &[BlendMode::Darken, BlendMode::Multiply, BlendMode::ColorBurn, BlendMode::LinearBurn],
+        &[BlendMode::Lighten, BlendMode::Screen, BlendMode::ColorDodge, BlendMode::Add],
+        &[
+            BlendMode::Overlay,
+            BlendMode::SoftLight,
+            BlendMode::HardLight,
+            BlendMode::VividLight,
+            BlendMode::LinearLight,
+            BlendMode::PinLight,
+            BlendMode::HardMix,
+        ],
+        &[BlendMode::Difference, BlendMode::Exclusion, BlendMode::Subtract, BlendMode::Divide],
+        &[BlendMode::Hue, BlendMode::Saturation, BlendMode::Color, BlendMode::Luminosity],
+    ];
+
+    /// Every mode in menu order.
+    pub fn all() -> impl Iterator<Item = BlendMode> {
+        Self::GROUPS.into_iter().flatten().copied()
+    }
+
+    /// The next (`step` = 1) or previous (-1) mode in menu order, wrapping.
+    pub fn cycle(self, step: i32) -> BlendMode {
+        let all: Vec<BlendMode> = Self::all().collect();
+        let i = all.iter().position(|m| *m == self).unwrap_or(0) as i32;
+        all[(i + step).rem_euclid(all.len() as i32) as usize]
+    }
 
     pub fn label(self) -> &'static str {
         match self {
             BlendMode::Normal => "Normal",
-            BlendMode::Add => "Add",
+            BlendMode::Add => "Add (Linear Dodge)",
             BlendMode::Screen => "Screen",
             BlendMode::Multiply => "Multiply",
+            BlendMode::Darken => "Darken",
+            BlendMode::ColorBurn => "Color Burn",
+            BlendMode::LinearBurn => "Linear Burn",
+            BlendMode::Lighten => "Lighten",
+            BlendMode::ColorDodge => "Color Dodge",
+            BlendMode::Overlay => "Overlay",
+            BlendMode::SoftLight => "Soft Light",
+            BlendMode::HardLight => "Hard Light",
+            BlendMode::VividLight => "Vivid Light",
+            BlendMode::LinearLight => "Linear Light",
+            BlendMode::PinLight => "Pin Light",
+            BlendMode::HardMix => "Hard Mix",
+            BlendMode::Difference => "Difference",
+            BlendMode::Exclusion => "Exclusion",
+            BlendMode::Subtract => "Subtract",
+            BlendMode::Divide => "Divide",
+            BlendMode::Hue => "Hue",
+            BlendMode::Saturation => "Saturation",
+            BlendMode::Color => "Color",
+            BlendMode::Luminosity => "Luminosity",
         }
     }
 }
@@ -724,6 +878,20 @@ mod tests {
         assert_eq!(Pattern::TestGrid.shader_index(), 8);
         assert_eq!(Pattern::Tunnel.shader_index(), 9);
         assert_eq!(Pattern::Rain.shader_index(), 26);
+        assert_eq!(Pattern::Melt.shader_index(), 27);
+        assert_eq!(Pattern::Halftone.shader_index(), 40);
+    }
+
+    #[test]
+    fn blend_modes_cycle_through_every_mode() {
+        let all: Vec<BlendMode> = BlendMode::all().collect();
+        assert_eq!(all.len(), 24);
+        for (i, m) in all.iter().enumerate() {
+            assert!(!all[..i].contains(m), "{m:?} listed twice");
+        }
+        assert_eq!(BlendMode::Normal.cycle(1), BlendMode::Darken);
+        assert_eq!(BlendMode::Normal.cycle(-1), BlendMode::Luminosity);
+        assert_eq!(BlendMode::Luminosity.cycle(1), BlendMode::Normal);
     }
 
     #[test]

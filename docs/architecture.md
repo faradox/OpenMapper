@@ -65,7 +65,16 @@ The fragment shader:
    uniforms, mirrored or cyclic) turns the position into a color, and the intensity
    fades it over color A (the background). The test grid paints its own colors.
 5. Hue rotation, tint, opacity (with opacity LFO), then premultiplied output.
-   Blend modes are separate pipelines with different blend states.
+
+**Blend modes.** Modes that fixed-function blending computes exactly (Normal, Add,
+Screen, Multiply, Subtract, Exclusion) each have a pipeline with their own blend state
+(`fixed_blend`). The other 18 need the color underneath: before drawing such a
+surface, `Renderer::draw` ends the render pass, copies the pixels under the surface's
+bounding box (`pixel_bounds`) into a **backdrop** texture, and starts a new pass. The
+shader reads the backdrop at its own pixel (`textureLoad`), applies the W3C/Photoshop
+blend function (`blend()` in the WGSL, selected by `backdrop_index`), and composites
+normally. Cost: one small copy and one pass break per such surface. Blending happens
+on sRGB-encoded values, like Photoshop's default.
 
 Uniforms for all surfaces go into one buffer with dynamic offsets (1376 bytes per
 surface, padded to the device's offset alignment).

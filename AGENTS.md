@@ -127,6 +127,10 @@ read the source in `~/.cargo/registry/src/*/egui-0.37.0/` rather than going by m
 - **New built-in shape:** add a `Mask` variant (append; it's serialized by name), add it
   to `Mask::SHAPES` and give it `anchors()` in `om_core::shape`. It is drawn as a polygon
   automatically; the `built_in_shapes_fill_the_unit_square` test checks it.
+- **New blend mode:** append a `BlendMode` variant, put it in `BlendMode::GROUPS`, then
+  either give it a blend state in `om_render::fixed_blend` (only if fixed-function
+  blending is exact on premultiplied output) or a number in `backdrop_index` and a
+  `case` in `blend()` in `surface.wgsl`. A test checks every mode has exactly one.
 - **New media type:** add a `SourceKind` variant (with `media_path()` if file-based),
   load it in `om_render::textures::TextureCache::sync`, accept its extension in
   `OpenMapperApp::import_media`. Decoding that takes time belongs on a thread in `om-media`.

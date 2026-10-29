@@ -28,6 +28,11 @@ Save As / Import), in-app save prompts. Tracker:
 palettes and a live-preview Shader Library. Tracker:
 [trackers/0004-shapes-pen-shaders.md](trackers/0004-shapes-pen-shaders.md).
 
+## ✅ v0.4: More shaders, Photoshop blend modes (done)
+
+14 new shaders (42 presets), 3 new palettes, all 24 Photoshop blend modes with
+`Shift +/-` cycling. Tracker: [trackers/0005-shaders-blend-modes.md](trackers/0005-shaders-blend-modes.md).
+
 ## Next candidates (pick from feedback)
 
 ### Output & show workflow

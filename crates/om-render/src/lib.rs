@@ -7,6 +7,11 @@
 //!
 //! Colors are kept in display (sRGB-encoded) space end to end, matching how
 //! designers pick colors and how egui displays user textures.
+//!
+//! Blend modes that fixed-function blending can express exactly (Normal, Add,
+//! Screen, Multiply, Subtract, Exclusion) use their own pipeline. All others
+//! read what is already drawn: before such a surface, the area under it is
+//! copied into a backdrop texture, and the shader blends against that.
 
 mod textures;
 
@@ -66,7 +71,14 @@ pub struct OutputTarget {
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// One pipeline per fixed-function blend mode.
     pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
+    /// Normal blending; the shader does the blend math against the backdrop.
+    backdrop_pipeline: wgpu::RenderPipeline,
+    backdrop_layout: wgpu::BindGroupLayout,
+    /// Copy of the canvas under the surface being drawn. Grows to the
+    /// largest target it was used with.
+    backdrop: (wgpu::Texture, wgpu::BindGroup),
     uniform_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
@@ -103,16 +115,43 @@ impl Renderer {
 
         let textures = TextureCache::new(device, queue);
 
+        let backdrop_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("om backdrop"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("om surface layout"),
-            bind_group_layouts: &[Some(&uniform_layout), Some(textures.layout())],
+            bind_group_layouts: &[Some(&uniform_layout), Some(textures.layout()), Some(&backdrop_layout)],
             immediate_size: 0,
         });
 
-        let pipelines = BlendMode::ALL
-            .into_iter()
-            .map(|mode| (mode, create_pipeline(device, &layout, &shader, mode)))
+        let pipelines = BlendMode::all()
+            .filter_map(|mode| {
+                let blend = fixed_blend(mode)?;
+                Some((
+                    mode,
+                    create_pipeline(device, &layout, &shader, blend, &format!("om surface {mode:?}")),
+                ))
+            })
             .collect();
+        let backdrop_pipeline = create_pipeline(
+            device,
+            &layout,
+            &shader,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            "om surface backdrop blend",
+        );
+        let backdrop = create_backdrop(device, &backdrop_layout, 1, 1);
 
         let align = device.limits().min_uniform_buffer_offset_alignment as u64;
         let uniform_stride = (size_of::<SurfaceUniforms>() as u64).div_ceil(align) * align;
@@ -125,6 +164,9 @@ impl Renderer {
             device: device.clone(),
             queue: queue.clone(),
             pipelines,
+            backdrop_pipeline,
+            backdrop_layout,
+            backdrop,
             uniform_layout,
             uniform_buffer,
             uniform_bind_group,
@@ -176,8 +218,8 @@ impl Renderer {
             self.output_generation += 1;
         }
         self.textures.sync(&self.device, &self.queue, project, time);
-        let view = self.output.view.clone();
-        self.draw(project, time, &view);
+        let target = self.output.texture.clone();
+        self.draw(project, time, &target);
     }
 
     /// Renders one [`THUMB_SIZE`] tile per generator into the thumbnail
@@ -201,8 +243,8 @@ impl Renderer {
             s.source = Some(source);
             project.surfaces.push(s);
         }
-        let view = self.thumbnails.as_ref().map(|t| t.view.clone()).expect("created above");
-        self.draw(&project, time, &view);
+        let target = self.thumbnails.as_ref().map(|t| t.texture.clone()).expect("created above");
+        self.draw(&project, time, &target);
     }
 
     pub fn thumbnails(&self) -> Option<&OutputTarget> {
@@ -222,9 +264,17 @@ impl Renderer {
         ([col as f32 * tw, row as f32 * th], [(col + 1) as f32 * tw, (row + 1) as f32 * th])
     }
 
-    fn draw(&mut self, project: &Project, time: f64, target: &wgpu::TextureView) {
+    fn draw(&mut self, project: &Project, time: f64, target: &wgpu::Texture) {
         let visible: Vec<&Surface> = project.surfaces.iter().filter(|s| s.visible).collect();
         self.ensure_uniform_capacity(visible.len());
+        let size = (target.width(), target.height());
+        let needs_backdrop = visible.iter().any(|s| fixed_blend(effective_blend(s)).is_none());
+        let (bw, bh) = (self.backdrop.0.width(), self.backdrop.0.height());
+        if needs_backdrop && (bw < size.0 || bh < size.1) {
+            self.backdrop =
+                create_backdrop(&self.device, &self.backdrop_layout, bw.max(size.0), bh.max(size.1));
+        }
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
         let canvas = project.canvas.size();
         let mut data = vec![0u8; self.uniform_stride as usize * visible.len().max(1)];
@@ -236,39 +286,44 @@ impl Renderer {
         self.queue.write_buffer(&self.uniform_buffer, 0, &data);
 
         let bg = project.canvas.background;
+        let clear = wgpu::Color { r: bg[0] as f64, g: bg[1] as f64, b: bg[2] as f64, a: bg[3] as f64 };
         let mut encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("om render") });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("om canvas"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: bg[0] as f64,
-                            g: bg[1] as f64,
-                            b: bg[2] as f64,
-                            a: bg[3] as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            for (i, s) in visible.iter().enumerate() {
-                let blend = if s.cutout { BlendMode::Normal } else { s.blend };
-                pass.set_pipeline(&self.pipelines[&blend]);
-                pass.set_bind_group(0, &self.uniform_bind_group, &[(i as u64 * self.uniform_stride) as u32]);
-                pass.set_bind_group(1, self.textures.bind_group_for(s.source, project), &[]);
-                pass.draw(0..6, 0..1);
-            }
+        let mut pass = Some(begin_pass(&mut encoder, &view, wgpu::LoadOp::Clear(clear), &self.backdrop.1));
+        for (i, s) in visible.iter().enumerate() {
+            let pipeline = match self.pipelines.get(&effective_blend(s)) {
+                Some(p) => p,
+                None => {
+                    // Off-canvas surfaces draw nothing.
+                    let Some((origin, extent)) = pixel_bounds(s.corners, size) else { continue };
+                    // A copy can't happen inside a pass: end it, copy, continue.
+                    drop(pass.take());
+                    encoder.copy_texture_to_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: target,
+                            mip_level: 0,
+                            origin,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &self.backdrop.0,
+                            mip_level: 0,
+                            origin,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        extent,
+                    );
+                    pass = Some(begin_pass(&mut encoder, &view, wgpu::LoadOp::Load, &self.backdrop.1));
+                    &self.backdrop_pipeline
+                }
+            };
+            let pass = pass.as_mut().expect("a pass is always open here");
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &self.uniform_bind_group, &[(i as u64 * self.uniform_stride) as u32]);
+            pass.set_bind_group(1, self.textures.bind_group_for(s.source, project), &[]);
+            pass.draw(0..6, 0..1);
         }
+        drop(pass);
         self.queue.submit([encoder.finish()]);
     }
 
@@ -281,6 +336,107 @@ impl Renderer {
         self.uniform_buffer = buf;
         self.uniform_bind_group = bg;
         self.uniform_capacity = cap;
+    }
+}
+
+fn begin_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    load: wgpu::LoadOp<wgpu::Color>,
+    backdrop: &wgpu::BindGroup,
+) -> wgpu::RenderPass<'static> {
+    let mut pass = encoder
+        .begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("om canvas"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        })
+        .forget_lifetime();
+    pass.set_bind_group(2, backdrop, &[]);
+    pass
+}
+
+/// Cutouts always paint normally.
+fn effective_blend(s: &Surface) -> BlendMode {
+    if s.cutout { BlendMode::Normal } else { s.blend }
+}
+
+/// Pixel rectangle covered by a surface's corners, clipped to the target.
+fn pixel_bounds(corners: [Vec2; 4], size: (u32, u32)) -> Option<(wgpu::Origin3d, wgpu::Extent3d)> {
+    let min = corners.iter().fold(Vec2::INFINITY, |a, c| a.min(*c)).floor().max(Vec2::ZERO);
+    let max = corners.iter().fold(Vec2::NEG_INFINITY, |a, c| a.max(*c)).ceil();
+    let max = max.min(Vec2::new(size.0 as f32, size.1 as f32));
+    if !(min.x < max.x && min.y < max.y) {
+        return None;
+    }
+    Some((
+        wgpu::Origin3d { x: min.x as u32, y: min.y as u32, z: 0 },
+        wgpu::Extent3d {
+            width: (max.x - min.x) as u32,
+            height: (max.y - min.y) as u32,
+            depth_or_array_layers: 1,
+        },
+    ))
+}
+
+/// Blend state for modes that fixed-function blending computes exactly
+/// (the shader outputs premultiplied alpha), `None` for the backdrop modes.
+fn fixed_blend(mode: BlendMode) -> Option<wgpu::BlendState> {
+    use wgpu::{BlendComponent, BlendFactor as F, BlendOperation as Op};
+    let comp = |src, dst| BlendComponent { src_factor: src, dst_factor: dst, operation: Op::Add };
+    let alpha = comp(F::One, F::OneMinusSrcAlpha);
+    let color = match mode {
+        BlendMode::Normal => return Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+        BlendMode::Add => comp(F::One, F::One),
+        BlendMode::Screen => comp(F::One, F::OneMinusSrc),
+        BlendMode::Multiply => comp(F::Dst, F::OneMinusSrcAlpha),
+        // dst - src·a
+        BlendMode::Subtract => {
+            BlendComponent { src_factor: F::One, dst_factor: F::One, operation: Op::ReverseSubtract }
+        }
+        // src·a·(1 - dst) + dst·(1 - src·a) = dst + a·(src + dst - 2·src·dst)
+        BlendMode::Exclusion => comp(F::OneMinusDst, F::OneMinusSrc),
+        _ => return None,
+    };
+    Some(wgpu::BlendState { color, alpha })
+}
+
+/// The shader's blend function for a backdrop mode (`0` = blending is done
+/// by the pipeline). Must match `blend()` in surface.wgsl.
+fn backdrop_index(mode: BlendMode) -> u32 {
+    match mode {
+        BlendMode::Darken => 1,
+        BlendMode::Lighten => 2,
+        BlendMode::ColorBurn => 3,
+        BlendMode::LinearBurn => 4,
+        BlendMode::ColorDodge => 5,
+        BlendMode::Overlay => 6,
+        BlendMode::SoftLight => 7,
+        BlendMode::HardLight => 8,
+        BlendMode::VividLight => 9,
+        BlendMode::LinearLight => 10,
+        BlendMode::PinLight => 11,
+        BlendMode::HardMix => 12,
+        BlendMode::Difference => 13,
+        BlendMode::Divide => 14,
+        BlendMode::Hue => 15,
+        BlendMode::Saturation => 16,
+        BlendMode::Color => 17,
+        BlendMode::Luminosity => 18,
+        BlendMode::Normal
+        | BlendMode::Add
+        | BlendMode::Screen
+        | BlendMode::Multiply
+        | BlendMode::Subtract
+        | BlendMode::Exclusion => 0,
     }
 }
 
@@ -355,7 +511,7 @@ fn surface_uniforms(project: &Project, s: &Surface, canvas: Vec2, time: f32) -> 
             aspect,
         ],
         stops,
-        shape: [point_count as f32, 0.0, 0.0, 0.0],
+        shape: [point_count as f32, backdrop_index(effective_blend(s)) as f32, 0.0, 0.0],
         points,
     }
 }
@@ -364,27 +520,11 @@ fn create_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
-    mode: BlendMode,
+    blend: wgpu::BlendState,
+    label: &str,
 ) -> wgpu::RenderPipeline {
-    use wgpu::{BlendComponent, BlendFactor as F, BlendOperation as Op};
-    let comp = |src, dst| BlendComponent { src_factor: src, dst_factor: dst, operation: Op::Add };
-    // The shader outputs premultiplied alpha.
-    let blend = match mode {
-        BlendMode::Normal => wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-        BlendMode::Add => {
-            wgpu::BlendState { color: comp(F::One, F::One), alpha: comp(F::One, F::OneMinusSrcAlpha) }
-        }
-        BlendMode::Screen => {
-            wgpu::BlendState { color: comp(F::One, F::OneMinusSrc), alpha: comp(F::One, F::OneMinusSrcAlpha) }
-        }
-        BlendMode::Multiply => wgpu::BlendState {
-            color: comp(F::Dst, F::OneMinusSrcAlpha),
-            alpha: comp(F::One, F::OneMinusSrcAlpha),
-        },
-    };
-
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(&format!("om surface {mode:?}")),
+        label: Some(label),
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module: shader,
@@ -439,6 +579,31 @@ fn create_uniforms(
         }],
     });
     (buffer, bind_group)
+}
+
+fn create_backdrop(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::BindGroup) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("om backdrop"),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: OUTPUT_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("om backdrop"),
+        layout,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }],
+    });
+    (texture, bind_group)
 }
 
 fn create_output(device: &wgpu::Device, width: u32, height: u32) -> OutputTarget {
@@ -511,6 +676,41 @@ mod tests {
         assert_eq!(u.pal[0], 5.0);
         assert_eq!(u.pal[2], 0.25);
         assert_eq!(u.stops[0], [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn every_blend_mode_has_a_pipeline_or_a_shader_function() {
+        let mut seen = Vec::new();
+        for mode in om_core::BlendMode::all() {
+            let index = super::backdrop_index(mode);
+            assert_eq!(super::fixed_blend(mode).is_some(), index == 0, "{mode:?}");
+            if index > 0 {
+                assert!(!seen.contains(&index), "{mode:?} reuses {index}");
+                seen.push(index);
+            }
+        }
+        assert_eq!(seen.len(), 18);
+    }
+
+    #[test]
+    fn backdrop_blend_reaches_the_shader() {
+        let mut p = om_core::Project::demo();
+        p.surfaces[0].blend = om_core::BlendMode::Overlay;
+        let u = super::surface_uniforms(&p, &p.surfaces[0], p.canvas.size(), 0.0);
+        assert_eq!(u.shape[1], 6.0);
+        p.surfaces[0].cutout = true;
+        let u = super::surface_uniforms(&p, &p.surfaces[0], p.canvas.size(), 0.0);
+        assert_eq!(u.shape[1], 0.0, "cutouts paint normally");
+    }
+
+    #[test]
+    fn pixel_bounds_are_clipped_to_the_target() {
+        use glam::Vec2;
+        let c = [Vec2::new(-10.0, 5.2), Vec2::new(50.5, 5.0), Vec2::new(60.0, 300.0), Vec2::new(0.0, 40.0)];
+        let (o, e) = super::pixel_bounds(c, (100, 100)).unwrap();
+        assert_eq!((o.x, o.y, e.width, e.height), (0, 5, 60, 95));
+        let off = c.map(|v| v + Vec2::new(500.0, 0.0));
+        assert!(super::pixel_bounds(off, (100, 100)).is_none());
     }
 
     #[test]

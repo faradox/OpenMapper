@@ -81,6 +81,13 @@ Tip: use the **Test Grid** source while aligning. Its lines make distortion obvi
 - **Texture → Mapping:** *Fit* puts the whole image on each surface; *Span* spreads
   one image across the whole canvas, so several surfaces together show one picture.
 
+- **Blend** (Properties → Appearance) mixes a surface with what is behind it, with the
+  same modes and order as Photoshop: Darken/Multiply/Burn, Lighten/Screen/Dodge/Add,
+  Overlay/Soft Light/Hard Light…, Difference/Exclusion/Subtract/Divide, and
+  Hue/Saturation/Color/Luminosity. Select surfaces and press `Shift +` / `Shift -` to
+  step through them while watching the projection. Try a shader on top of a video
+  with *Overlay* or *Color*, or a black-and-white shader with *Multiply* as a mask.
+
 ## 5. Animate
 
 Open the **Animate** section in Properties. Start with the presets: **Drift, Spin,
