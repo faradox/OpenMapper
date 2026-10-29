@@ -20,6 +20,21 @@ Decisions:
 - → docs/trackers/NNNN-....md
 ```
 
+## 2026-10-29: v0.2
+
+Pain points / wishes (in her words where possible):
+- More shapes than circle, square and triangle; "the ability to create free-form
+  shapes from adding anchor points and dragging them around".
+- She likes the shaders in HeavyM: wants a shader catalogue with cool, trippy shaders.
+
+Decisions:
+- Shapes live in the surface's unit square, so all of them (built-in and free-form)
+  keep working with corner pinning and Free Transform. Pen tool + Edit Points with
+  automatic curve points (no Bézier handles yet; see how far that gets her).
+- Built-in shaders with palettes and a live-preview Shader Library first; ISF import
+  later if she wants shaders from elsewhere.
+  → [trackers/0004-shapes-pen-shaders.md](trackers/0004-shapes-pen-shaders.md)
+
 ## 2026-10-28: v0.1 + Free Transform, first hands-on session
 
 Pain points / wishes (in her words where possible):

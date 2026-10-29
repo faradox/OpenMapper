@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::Color;
 pub use crate::anim::TextureTransform;
 use crate::anim::{Animation, Lfo, Wave};
+use crate::shape::{Mask, PathPoint};
 
 /// Bumped whenever the on-disk format changes incompatibly.
 pub const FORMAT_VERSION: u32 = 1;
@@ -42,8 +43,10 @@ impl Canvas {
     }
 }
 
-/// Built-in procedural patterns. Rendered on the GPU, so they cost nothing
-/// to load and animate smoothly at any resolution.
+/// Built-in procedural patterns ("shaders"). Rendered on the GPU, so they
+/// cost nothing to load and animate smoothly at any resolution.
+///
+/// New patterns go at the end: the shader identifies them by position.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Pattern {
     #[default]
@@ -55,10 +58,28 @@ pub enum Pattern {
     Plasma,
     /// Calibration grid with crosshair and border.
     TestGrid,
+    Tunnel,
+    Kaleidoscope,
+    Spiral,
+    Liquid,
+    Cells,
+    Starfield,
+    Lava,
+    Truchet,
+    Moire,
+    Julia,
+    Aurora,
+    Fire,
+    Ripples,
+    Hexagons,
+    Vortex,
+    Sunburst,
+    OpArt,
+    Rain,
 }
 
 impl Pattern {
-    pub const ALL: [Pattern; 7] = [
+    pub const ALL: [Pattern; 25] = [
         Pattern::Gradient,
         Pattern::Checker,
         Pattern::Stripes,
@@ -66,6 +87,24 @@ impl Pattern {
         Pattern::Noise,
         Pattern::Plasma,
         Pattern::TestGrid,
+        Pattern::Tunnel,
+        Pattern::Kaleidoscope,
+        Pattern::Spiral,
+        Pattern::Liquid,
+        Pattern::Cells,
+        Pattern::Starfield,
+        Pattern::Lava,
+        Pattern::Truchet,
+        Pattern::Moire,
+        Pattern::Julia,
+        Pattern::Aurora,
+        Pattern::Fire,
+        Pattern::Ripples,
+        Pattern::Hexagons,
+        Pattern::Vortex,
+        Pattern::Sunburst,
+        Pattern::OpArt,
+        Pattern::Rain,
     ];
 
     pub fn label(self) -> &'static str {
@@ -77,12 +116,185 @@ impl Pattern {
             Pattern::Noise => "Noise",
             Pattern::Plasma => "Plasma",
             Pattern::TestGrid => "Test Grid",
+            Pattern::Tunnel => "Tunnel",
+            Pattern::Kaleidoscope => "Kaleidoscope",
+            Pattern::Spiral => "Hypno Spiral",
+            Pattern::Liquid => "Liquid",
+            Pattern::Cells => "Cells",
+            Pattern::Starfield => "Warp Speed",
+            Pattern::Lava => "Lava Lamp",
+            Pattern::Truchet => "Truchet",
+            Pattern::Moire => "Moiré",
+            Pattern::Julia => "Julia Fractal",
+            Pattern::Aurora => "Aurora",
+            Pattern::Fire => "Fire",
+            Pattern::Ripples => "Ripples",
+            Pattern::Hexagons => "Hexagons",
+            Pattern::Vortex => "Vortex",
+            Pattern::Sunburst => "Sunburst",
+            Pattern::OpArt => "Op Art",
+            Pattern::Rain => "Digital Rain",
         }
+    }
+
+    /// What the generator's `detail` slider does for this pattern, if anything.
+    pub fn detail_label(self) -> Option<&'static str> {
+        Some(match self {
+            Pattern::Tunnel => "Twist",
+            Pattern::Kaleidoscope => "Mirrors",
+            Pattern::Spiral => "Arms",
+            Pattern::Liquid => "Warp",
+            Pattern::Cells => "Edges",
+            Pattern::Starfield => "Star size",
+            Pattern::Lava => "Blobs",
+            Pattern::Truchet => "Line width",
+            Pattern::Moire => "Drift",
+            Pattern::Julia => "Detail",
+            Pattern::Aurora => "Softness",
+            Pattern::Fire => "Height",
+            Pattern::Ripples => "Drops",
+            Pattern::Hexagons => "Wave size",
+            Pattern::Vortex => "Twist",
+            Pattern::Sunburst => "Color sweep",
+            Pattern::OpArt => "Warp",
+            Pattern::Rain => "Trail length",
+            _ => return None,
+        })
     }
 
     /// Index used by the shader (`0` and `1` are reserved for image and solid).
     pub fn shader_index(self) -> u32 {
         2 + Pattern::ALL.iter().position(|p| *p == self).unwrap_or(0) as u32
+    }
+}
+
+/// Colors a pattern is painted with. The pattern computes a position on the
+/// palette per pixel; the palette turns that into a color.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Palette {
+    /// The generator's two colors.
+    #[default]
+    Duotone,
+    Rainbow,
+    Neon,
+    Fire,
+    Ocean,
+    Sunset,
+    Aurora,
+    Acid,
+    Ice,
+    Candy,
+    Mono,
+}
+
+impl Palette {
+    pub const ALL: [Palette; 11] = [
+        Palette::Duotone,
+        Palette::Rainbow,
+        Palette::Neon,
+        Palette::Fire,
+        Palette::Ocean,
+        Palette::Sunset,
+        Palette::Aurora,
+        Palette::Acid,
+        Palette::Ice,
+        Palette::Candy,
+        Palette::Mono,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Palette::Duotone => "Two colors",
+            Palette::Rainbow => "Rainbow",
+            Palette::Neon => "Neon",
+            Palette::Fire => "Fire",
+            Palette::Ocean => "Ocean",
+            Palette::Sunset => "Sunset",
+            Palette::Aurora => "Aurora",
+            Palette::Acid => "Acid",
+            Palette::Ice => "Ice",
+            Palette::Candy => "Candy",
+            Palette::Mono => "Black & white",
+        }
+    }
+
+    /// Rainbow wraps around (red follows violet); the other palettes run
+    /// from their first color to their last and back.
+    pub fn is_cyclic(self) -> bool {
+        self == Palette::Rainbow
+    }
+
+    /// Gradient stops, sRGB. `a` and `b` are the generator's two colors.
+    pub fn stops(self, a: Color, b: Color) -> Vec<Color> {
+        let rgb = |c: &[[f32; 3]]| c.iter().map(|&[r, g, b]| [r, g, b, 1.0]).collect();
+        match self {
+            Palette::Duotone => vec![a, b],
+            Palette::Rainbow => rgb(&[
+                [1.0, 0.1, 0.1],
+                [1.0, 0.85, 0.0],
+                [0.1, 1.0, 0.2],
+                [0.0, 0.85, 1.0],
+                [0.25, 0.2, 1.0],
+                [1.0, 0.1, 0.9],
+            ]),
+            Palette::Neon => rgb(&[
+                [0.05, 0.0, 0.2],
+                [0.55, 0.0, 1.0],
+                [1.0, 0.1, 0.75],
+                [0.0, 0.9, 1.0],
+                [0.85, 1.0, 1.0],
+            ]),
+            Palette::Fire => rgb(&[
+                [0.0, 0.0, 0.0],
+                [0.55, 0.02, 0.0],
+                [0.95, 0.3, 0.0],
+                [1.0, 0.75, 0.1],
+                [1.0, 1.0, 0.85],
+            ]),
+            Palette::Ocean => rgb(&[
+                [0.0, 0.02, 0.1],
+                [0.0, 0.15, 0.4],
+                [0.0, 0.5, 0.7],
+                [0.2, 0.85, 0.85],
+                [0.85, 1.0, 1.0],
+            ]),
+            Palette::Sunset => rgb(&[
+                [0.1, 0.0, 0.2],
+                [0.45, 0.05, 0.45],
+                [0.9, 0.2, 0.4],
+                [1.0, 0.55, 0.2],
+                [1.0, 0.85, 0.4],
+            ]),
+            Palette::Aurora => rgb(&[
+                [0.0, 0.02, 0.08],
+                [0.0, 0.45, 0.35],
+                [0.2, 1.0, 0.5],
+                [0.3, 0.6, 1.0],
+                [0.75, 0.3, 1.0],
+            ]),
+            Palette::Acid => rgb(&[
+                [0.0, 0.1, 0.0],
+                [0.3, 0.9, 0.0],
+                [0.95, 1.0, 0.0],
+                [1.0, 0.15, 0.6],
+                [0.35, 0.0, 0.85],
+            ]),
+            Palette::Ice => rgb(&[
+                [0.0, 0.0, 0.03],
+                [0.05, 0.1, 0.4],
+                [0.2, 0.45, 0.9],
+                [0.6, 0.85, 1.0],
+                [1.0, 1.0, 1.0],
+            ]),
+            Palette::Candy => rgb(&[
+                [1.0, 0.55, 0.75],
+                [0.75, 0.6, 1.0],
+                [0.5, 0.9, 0.85],
+                [1.0, 0.85, 0.55],
+                [1.0, 0.6, 0.65],
+            ]),
+            Palette::Mono => rgb(&[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]),
+        }
     }
 }
 
@@ -98,6 +310,10 @@ pub struct Generator {
     pub speed: f32,
     /// Degrees.
     pub angle: f32,
+    /// With any palette but `Duotone`, `color_a` is the background.
+    pub palette: Palette,
+    /// Pattern-specific extra control, 0..1 (see `Pattern::detail_label`).
+    pub detail: f32,
 }
 
 impl Default for Generator {
@@ -109,6 +325,8 @@ impl Default for Generator {
             scale: 4.0,
             speed: 0.25,
             angle: 0.0,
+            palette: Palette::Duotone,
+            detail: 0.5,
         }
     }
 }
@@ -167,27 +385,6 @@ pub enum Mapping {
     Canvas,
 }
 
-/// Shape cut out of a surface's quad.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Mask {
-    #[default]
-    Quad,
-    Ellipse,
-    Triangle,
-}
-
-impl Mask {
-    pub const ALL: [Mask; 3] = [Mask::Quad, Mask::Ellipse, Mask::Triangle];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Mask::Quad => "Quad",
-            Mask::Ellipse => "Ellipse",
-            Mask::Triangle => "Triangle",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BlendMode {
     #[default]
@@ -223,6 +420,8 @@ pub struct Surface {
     /// Canvas pixels; order: top-left, top-right, bottom-right, bottom-left.
     pub corners: [Vec2; 4],
     pub mask: Mask,
+    /// Anchor points of a `Mask::Freeform` shape, in the unit square of `corners`.
+    pub path: Vec<PathPoint>,
     pub source: Option<SourceId>,
     pub opacity: f32,
     pub tint: Color,
@@ -252,6 +451,7 @@ impl Surface {
             locked: false,
             corners,
             mask: Mask::Quad,
+            path: Vec::new(),
             source: None,
             opacity: 1.0,
             tint: [1.0; 4],
@@ -409,6 +609,7 @@ impl Project {
                 scale: 8.0,
                 speed: 0.0,
                 angle: 0.0,
+                ..Default::default()
             }),
         );
         let stripes = p.add_source(
@@ -420,6 +621,7 @@ impl Project {
                 scale: 6.0,
                 speed: 0.6,
                 angle: 45.0,
+                ..Default::default()
             }),
         );
         let plasma = p.add_source(
@@ -431,6 +633,7 @@ impl Project {
                 scale: 3.0,
                 speed: 0.4,
                 angle: 0.0,
+                ..Default::default()
             }),
         );
         let rings = p.add_source(
@@ -442,6 +645,7 @@ impl Project {
                 scale: 5.0,
                 speed: 0.5,
                 angle: 0.0,
+                ..Default::default()
             }),
         );
         p.add_source("White", SourceKind::Solid { color: [1.0; 4] });
@@ -518,5 +722,15 @@ mod tests {
     fn shader_indices_are_stable() {
         assert_eq!(Pattern::Gradient.shader_index(), 2);
         assert_eq!(Pattern::TestGrid.shader_index(), 8);
+        assert_eq!(Pattern::Tunnel.shader_index(), 9);
+        assert_eq!(Pattern::Rain.shader_index(), 26);
+    }
+
+    #[test]
+    fn palettes_have_stops() {
+        for p in Palette::ALL {
+            let stops = p.stops([0.0; 4], [1.0; 4]);
+            assert!((2..=6).contains(&stops.len()), "{p:?}");
+        }
     }
 }

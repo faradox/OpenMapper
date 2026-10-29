@@ -2,7 +2,7 @@
 //! videos) plus an editor for the selected source.
 
 use egui::{Button, RichText, Ui};
-use om_core::{Generator, Pattern, SourceId, SourceKind};
+use om_core::{Generator, Palette, Pattern, SourceId, SourceKind};
 
 use super::panel_header;
 use crate::app::{Action, OpenMapperApp};
@@ -16,8 +16,8 @@ pub fn sources_panel(ui: &mut Ui, app: &mut OpenMapperApp) {
         if ui.small_button("+ Color").clicked() {
             app.act(Action::AddSource(SourceKind::Solid { color: [1.0, 1.0, 1.0, 1.0] }));
         }
-        if ui.small_button("+ Pattern").clicked() {
-            app.act(Action::AddSource(SourceKind::Generator(Generator::default())));
+        if ui.small_button("✨ Shaders…").on_hover_text("Open the Shader Library (Cmd+L)").clicked() {
+            app.act(Action::ToggleLibrary);
         }
         if ui.small_button("+ Media…").on_hover_text("Import images and MP4 videos").clicked() {
             app.act(Action::ImportMedia);
@@ -74,6 +74,10 @@ pub fn sources_panel(ui: &mut Ui, app: &mut OpenMapperApp) {
                 });
                 if resp.clicked() {
                     app.editor.selected_source = Some(id);
+                }
+                if selected && app.editor.scroll_to_source {
+                    resp.scroll_to_me(None);
+                    app.editor.scroll_to_source = false;
                 }
                 if resp.double_clicked() && has_sel {
                     let sel = app.editor.selection.surfaces.clone();
@@ -155,21 +159,42 @@ pub fn sources_panel(ui: &mut Ui, app: &mut OpenMapperApp) {
 
 fn generator_ui(ui: &mut Ui, g: &mut Generator) {
     prop_label(ui, "Pattern", "");
-    egui::ComboBox::from_id_salt("pattern").selected_text(g.pattern.label()).show_ui(ui, |ui| {
-        for p in Pattern::ALL {
-            ui.selectable_value(&mut g.pattern, p, p.label());
-        }
-    });
+    egui::ComboBox::from_id_salt("pattern").selected_text(g.pattern.label()).height(400.0).show_ui(
+        ui,
+        |ui| {
+            for p in Pattern::ALL {
+                ui.selectable_value(&mut g.pattern, p, p.label());
+            }
+        },
+    );
     ui.end_row();
 
-    prop_label(ui, "Colors", "Color A (background) and B (foreground)");
-    ui.horizontal(|ui| {
+    if g.pattern != Pattern::TestGrid {
+        prop_label(ui, "Palette", "The colors the pattern is painted with");
+        egui::ComboBox::from_id_salt("palette").selected_text(g.palette.label()).show_ui(ui, |ui| {
+            for p in Palette::ALL {
+                ui.horizontal(|ui| {
+                    palette_strip(ui, p.stops(g.color_a, g.color_b), egui::vec2(36.0, 12.0));
+                    ui.selectable_value(&mut g.palette, p, p.label());
+                });
+            }
+        });
+        ui.end_row();
+    }
+
+    if g.palette == Palette::Duotone || g.pattern == Pattern::TestGrid {
+        prop_label(ui, "Colors", "Color A (background) and B (foreground)");
+        ui.horizontal(|ui| {
+            color_edit(ui, &mut g.color_a);
+            if ui.small_button("⇄").on_hover_text("Swap colors").clicked() {
+                std::mem::swap(&mut g.color_a, &mut g.color_b);
+            }
+            color_edit(ui, &mut g.color_b);
+        });
+    } else {
+        prop_label(ui, "Background", "Shows through where the pattern is dark or empty");
         color_edit(ui, &mut g.color_a);
-        if ui.small_button("⇄").on_hover_text("Swap colors").clicked() {
-            std::mem::swap(&mut g.color_a, &mut g.color_b);
-        }
-        color_edit(ui, &mut g.color_b);
-    });
+    }
     ui.end_row();
 
     prop_label(ui, "Scale", "How many repetitions across the surface");
@@ -180,9 +205,30 @@ fn generator_ui(ui: &mut Ui, g: &mut Generator) {
     ui.add(egui::Slider::new(&mut g.speed, -4.0..=4.0));
     ui.end_row();
 
+    if let Some(label) = g.pattern.detail_label() {
+        prop_label(ui, label, "");
+        ui.add(egui::Slider::new(&mut g.detail, 0.0..=1.0));
+        ui.end_row();
+    }
+
     prop_label(ui, "Angle", "");
     ui.add(egui::Slider::new(&mut g.angle, -180.0..=180.0).suffix("°"));
     ui.end_row();
+}
+
+/// A horizontal gradient preview of palette stops.
+fn palette_strip(ui: &mut Ui, stops: Vec<om_core::Color>, size: egui::Vec2) {
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    paint_stops(ui.painter(), rect, &stops);
+}
+
+fn paint_stops(painter: &egui::Painter, rect: egui::Rect, stops: &[om_core::Color]) {
+    let n = stops.len().max(1) as f32;
+    for (i, c) in stops.iter().enumerate() {
+        let x0 = rect.min.x + rect.width() * i as f32 / n;
+        let x1 = rect.min.x + rect.width() * (i + 1) as f32 / n;
+        painter.rect_filled(egui::Rect::from_x_y_ranges(x0..=x1, rect.y_range()), 0.0, to_color32(*c));
+    }
 }
 
 /// Tiny visual hint of a source's kind and colors.
@@ -193,11 +239,7 @@ fn swatch(ui: &mut Ui, kind: &SourceKind) {
         SourceKind::Solid { color } => {
             p.rect_filled(rect, 2.0, to_color32(*color));
         }
-        SourceKind::Generator(g) => {
-            let (l, r) = rect.split_left_right_at_fraction(0.5);
-            p.rect_filled(l, 0.0, to_color32(g.color_a));
-            p.rect_filled(r, 0.0, to_color32(g.color_b));
-        }
+        SourceKind::Generator(g) => paint_stops(p, rect, &g.palette.stops(g.color_a, g.color_b)),
         SourceKind::Image { .. } | SourceKind::Video { .. } => {
             let icon = if matches!(kind, SourceKind::Video { .. }) { "🎬" } else { "🖼" };
             p.text(

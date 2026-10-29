@@ -65,8 +65,12 @@ Tip: use the **Test Grid** source while aligning. Its lines make distortion obvi
 
 - Select a surface and choose a **Source** in Properties, or double-click a source
   in the Sources panel to put it on all selected surfaces.
-- **+ Pattern** creates an animated pattern (gradient, checker, stripes, rings,
-  noise, plasma, test grid). Click it in Sources to set its colors, scale, speed and angle.
+- **✨ Shaders** (toolbar, or `Cmd+L`) opens the **Shader Library**: live previews of
+  animated shaders grouped by mood (Psychedelic, Geometric, Organic, Cosmic, Basics).
+  Select surfaces, pick a shader, **Apply**. Double-clicking a preview does the same.
+  The shader becomes a source: click it in Sources to change its **Palette**
+  (Rainbow, Neon, Fire, Ocean…, or *Two colors* of your own), scale, speed, angle and
+  its own extra control (Twist, Mirrors, Arms, Warp…).
 - **+ Media…** (or File → Import Images & Videos), or just **drag image and video
   files** onto the window. If surfaces are selected, the media goes straight onto them.
 - **Videos** must be H.264 (`.mp4`, `.mov`, `.m4v`): what most cameras, phones in
@@ -120,7 +124,24 @@ Just like Photoshop, a box with eight handles appears around the selection:
 Several surfaces scale and rotate together as one group, so you can resize a whole
 mapped object at once.
 
-## 8. Cut holes (Cutouts)
+## 8. More shapes and your own
+
+- **◆ Shapes** in the toolbar has 14 shapes: rounded rectangle, diamond, pentagon,
+  hexagon, octagon, star, burst, heart, cross, arrow, bolt and the basic three. You
+  can also switch a surface's **Shape** in Properties. Every shape sits inside the
+  surface's four corners, so corner pinning and `Cmd+T` work as usual.
+- **Draw your own** with the **Pen** (`P`, or ✒ Pen in the toolbar): click to place
+  points; *press and drag* to make a curve point. Click the first point (or press
+  `Enter`, or double-click) to finish. `Backspace` removes the last point, `Esc` cancels.
+- **Edit Points:** double-click a free-form shape, or select any shape and click
+  **✎ Edit Points** in Properties (that turns a star or heart into editable points too).
+  Drag points, click an edge to add a point, `Alt`-click (or select and `Delete`) to
+  remove one, double-click a point to switch between curve (round) and corner
+  (square). `Enter` or `Esc` when done. **All curves / All corners** in Properties
+  changes every point at once.
+- The texture fits the shape's bounding box, and a free-form shape can be a cutout.
+
+## 9. Cut holes (Cutouts)
 
 A **cutout** is a shape that removes everything below it: the window in a wall, a
 plant in front of the screen, the gap between two objects.
@@ -134,7 +155,7 @@ plant in front of the screen, the gap between two objects.
   opacity pulse animates it.
 - In the editor, cutouts have a dashed pink outline.
 
-## 9. Save
+## 10. Save
 
 `Cmd+S` saves an `.omap` project; `Cmd+Shift+S` saves under a new name.
 OpenMapper reopens your last project on launch. When you are about to lose

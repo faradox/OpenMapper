@@ -16,13 +16,19 @@ use std::num::NonZeroU64;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Vec2};
 use om_core::anim::evaluate;
-use om_core::{BlendMode, Mapping, Mask, Project, SourceId, SourceKind, Surface};
+use om_core::geom::quad_aspect;
+use om_core::shape::{MAX_OUTLINE_POINTS, outline_uv};
+use om_core::{BlendMode, Generator, Mapping, Mask, Palette, Project, SourceId, SourceKind, Surface};
 
 pub use om_media::{VIDEO_EXTENSIONS, VideoInfo};
 use textures::TextureCache;
 
 /// Format of the output texture (required by egui for native textures).
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// Pixel size of one tile in the thumbnail atlas.
+pub const THUMB_SIZE: (u32, u32) = (192, 120);
+const THUMB_COLUMNS: u32 = 6;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -37,7 +43,13 @@ struct SurfaceUniforms {
     color_b: [f32; 4],
     gen_params: [f32; 4],
     misc: [f32; 4],
+    pal: [f32; 4],
+    stops: [[f32; 4]; MAX_STOPS],
+    shape: [f32; 4],
+    points: [[f32; 4]; MAX_OUTLINE_POINTS / 2],
 }
+
+const MAX_STOPS: usize = 6;
 
 fn mat3_cols(m: Mat3) -> [[f32; 4]; 3] {
     [m.x_axis.extend(0.0).into(), m.y_axis.extend(0.0).into(), m.z_axis.extend(0.0).into()]
@@ -63,6 +75,9 @@ pub struct Renderer {
     textures: TextureCache,
     output: OutputTarget,
     output_generation: u64,
+    /// Live previews of generators (shader library), one tile each.
+    thumbnails: Option<OutputTarget>,
+    thumbnail_generation: u64,
 }
 
 impl Renderer {
@@ -118,6 +133,8 @@ impl Renderer {
             textures,
             output,
             output_generation: 0,
+            thumbnails: None,
+            thumbnail_generation: 0,
         }
     }
 
@@ -158,9 +175,54 @@ impl Renderer {
             self.output = create_output(&self.device, w, h);
             self.output_generation += 1;
         }
-
         self.textures.sync(&self.device, &self.queue, project, time);
+        let view = self.output.view.clone();
+        self.draw(project, time, &view);
+    }
 
+    /// Renders one [`THUMB_SIZE`] tile per generator into the thumbnail
+    /// atlas, row by row. See [`Renderer::thumbnail_uv`].
+    pub fn render_thumbnails(&mut self, generators: &[Generator], time: f64) {
+        let rows = (generators.len() as u32).div_ceil(THUMB_COLUMNS).max(1);
+        let (w, h) = (THUMB_SIZE.0 * THUMB_COLUMNS, THUMB_SIZE.1 * rows);
+        if self.thumbnails.as_ref().is_none_or(|t| (t.width, t.height) != (w, h)) {
+            self.thumbnails = Some(create_output(&self.device, w, h));
+            self.thumbnail_generation += 1;
+        }
+        let mut project = Project::empty();
+        project.canvas.width = w;
+        project.canvas.height = h;
+        let tile = Vec2::new(THUMB_SIZE.0 as f32, THUMB_SIZE.1 as f32);
+        for (i, g) in generators.iter().enumerate() {
+            let source = project.add_source("", SourceKind::Generator(g.clone()));
+            let id = project.new_surface_id();
+            let cell = Vec2::new((i as u32 % THUMB_COLUMNS) as f32, (i as u32 / THUMB_COLUMNS) as f32);
+            let mut s = Surface::rect(id, "", cell * tile, tile);
+            s.source = Some(source);
+            project.surfaces.push(s);
+        }
+        let view = self.thumbnails.as_ref().map(|t| t.view.clone()).expect("created above");
+        self.draw(&project, time, &view);
+    }
+
+    pub fn thumbnails(&self) -> Option<&OutputTarget> {
+        self.thumbnails.as_ref()
+    }
+
+    /// Increments whenever the thumbnail atlas is re-created.
+    pub fn thumbnail_generation(&self) -> u64 {
+        self.thumbnail_generation
+    }
+
+    /// Texture coordinates (min, max) of tile `index` in the thumbnail atlas.
+    pub fn thumbnail_uv(&self, index: usize) -> ([f32; 2], [f32; 2]) {
+        let Some(t) = &self.thumbnails else { return ([0.0; 2], [0.0; 2]) };
+        let (col, row) = (index as u32 % THUMB_COLUMNS, index as u32 / THUMB_COLUMNS);
+        let (tw, th) = (THUMB_SIZE.0 as f32 / t.width as f32, THUMB_SIZE.1 as f32 / t.height as f32);
+        ([col as f32 * tw, row as f32 * th], [(col + 1) as f32 * tw, (row + 1) as f32 * th])
+    }
+
+    fn draw(&mut self, project: &Project, time: f64, target: &wgpu::TextureView) {
         let visible: Vec<&Surface> = project.surfaces.iter().filter(|s| s.visible).collect();
         self.ensure_uniform_capacity(visible.len());
 
@@ -180,7 +242,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("om canvas"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.output.view,
+                    view: target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -229,6 +291,7 @@ fn surface_uniforms(project: &Project, s: &Surface, canvas: Vec2, time: f32) -> 
     // A cutout paints the canvas background over everything below it, using
     // the same coverage (mask, feather, opacity) as a normal surface.
     let bg = project.canvas.background;
+    let mut palette = (Palette::Duotone, 0.5);
     let (kind, color_a, color_b, scale, speed, angle) = match s
         .source
         .and_then(|id| project.source(id))
@@ -239,18 +302,39 @@ fn surface_uniforms(project: &Project, s: &Surface, canvas: Vec2, time: f32) -> 
         Some(SourceKind::Solid { color }) => (1.0, *color, *color, 1.0, 0.0, 0.0),
         Some(SourceKind::Image { .. } | SourceKind::Video { .. }) => (0.0, [1.0; 4], [1.0; 4], 1.0, 0.0, 0.0),
         Some(SourceKind::Generator(g)) => {
+            palette = (g.palette, g.detail);
             (g.pattern.shader_index() as f32, g.color_a, g.color_b, g.scale, g.speed, g.angle.to_radians())
         }
     };
+    let stop_list = palette.0.stops(color_a, color_b);
+    let mut stops = [[0.0; 4]; MAX_STOPS];
+    for (dst, src) in stops.iter_mut().zip(&stop_list) {
+        *dst = *src;
+    }
 
     let mask = match s.mask {
         Mask::Quad => 0.0,
         Mask::Ellipse => 1.0,
         Mask::Triangle => 2.0,
+        _ => 3.0,
     };
+    let mut points = [[0.0; 4]; MAX_OUTLINE_POINTS / 2];
+    let mut point_count = 0;
+    if s.mask.is_polygon() {
+        let outline = outline_uv(s.mask, &s.path);
+        point_count = outline.len().min(MAX_OUTLINE_POINTS);
+        for (i, p) in outline.iter().take(point_count).enumerate() {
+            points[i / 2][(i % 2) * 2] = p.x;
+            points[i / 2][(i % 2) * 2 + 1] = p.y;
+        }
+    }
     let mapping = match s.mapping {
         Mapping::Surface => 0.0,
         Mapping::Canvas => 1.0,
+    };
+    let aspect = match s.mapping {
+        Mapping::Surface => quad_aspect(c),
+        Mapping::Canvas => canvas.x / canvas.y.max(1.0),
     };
 
     SurfaceUniforms {
@@ -264,6 +348,15 @@ fn surface_uniforms(project: &Project, s: &Surface, canvas: Vec2, time: f32) -> 
         color_b,
         gen_params: [kind, scale, speed, angle],
         misc: [frame.opacity, if s.cutout { 0.0 } else { frame.hue_shift }, s.feather.clamp(0.0, 0.5), mask],
+        pal: [
+            stop_list.len().min(MAX_STOPS) as f32,
+            if palette.0.is_cyclic() { 1.0 } else { 0.0 },
+            palette.1.clamp(0.0, 1.0),
+            aspect,
+        ],
+        stops,
+        shape: [point_count as f32, 0.0, 0.0, 0.0],
+        points,
     }
 }
 
@@ -393,8 +486,36 @@ mod tests {
     }
 
     #[test]
+    fn polygon_shapes_send_their_outline() {
+        let mut p = om_core::Project::demo();
+        let u = super::surface_uniforms(&p, &p.surfaces[0], p.canvas.size(), 0.0);
+        assert_eq!((u.misc[3], u.shape[0]), (0.0, 0.0), "quad is analytic");
+
+        let s = &mut p.surfaces[0];
+        s.mask = om_core::Mask::Star;
+        let u = super::surface_uniforms(&p, &p.surfaces[0], p.canvas.size(), 0.0);
+        assert_eq!((u.misc[3], u.shape[0]), (3.0, 10.0));
+        // First star tip points up from the top-center.
+        assert!((u.points[0][0] - 0.5).abs() < 1e-4 && u.points[0][1].abs() < 1e-4);
+    }
+
+    #[test]
+    fn generator_palette_reaches_the_shader() {
+        let mut p = om_core::Project::demo();
+        let id = p.surfaces[0].source.unwrap();
+        if let Some(om_core::SourceKind::Generator(g)) = p.source_mut(id).map(|s| &mut s.kind) {
+            g.palette = om_core::Palette::Fire;
+            g.detail = 0.25;
+        }
+        let u = super::surface_uniforms(&p, &p.surfaces[0], p.canvas.size(), 0.0);
+        assert_eq!(u.pal[0], 5.0);
+        assert_eq!(u.pal[2], 0.25);
+        assert_eq!(u.stops[0], [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
     fn uniforms_match_shader_layout() {
-        // 14 vec4s, see `SurfaceUniforms` in surface.wgsl.
-        assert_eq!(size_of::<super::SurfaceUniforms>(), 14 * 16);
+        // 86 vec4s, see `SurfaceUniforms` in surface.wgsl.
+        assert_eq!(size_of::<super::SurfaceUniforms>(), 86 * 16);
     }
 }

@@ -2,10 +2,12 @@
 
 mod chrome;
 mod layers;
+mod library;
 mod properties;
 mod sources;
 
-pub use chrome::{menu_bar, status_bar, toolbar};
+pub use chrome::{menu_bar, shape_icon, status_bar, toolbar};
+pub use library::{Library, library_window};
 pub use properties::properties_panel;
 
 use crate::app::OpenMapperApp;

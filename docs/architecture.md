@@ -49,18 +49,30 @@ The fragment shader:
    (`geom::Homography`, Heckbert's square-to-quad). This gives perspective-correct
    texturing for any four-corner shape. Interpolating UVs across the two triangles
    would not.
-2. Computes coverage from the **mask** (quad/ellipse/triangle) using a signed
-   distance with `fwidth`-based antialiasing plus optional **feather**.
+2. Computes coverage from the **shape** (`Mask`) as a signed distance in the unit
+   square, with `fwidth`-based antialiasing plus optional **feather**. Quad, ellipse
+   and triangle have exact formulas. Every other shape, including free-form ones, is
+   a polygon of up to 128 points sent in the uniforms (`om_core::shape::outline_uv`)
+   and filled with an even-odd polygon distance. Because shapes live in the unit
+   square, they follow corner pinning, perspective and Free Transform for free.
 3. Chooses the base UV (surface UV for *Fit*, canvas UV for *Span*) and applies the
    animated **UV matrix** (offset/scale/rotation/flip + scroll/spin/zoom), with
    aspect correction so rotation stays rigid on non-square surfaces.
 4. Samples the source: image texture (repeat addressing), solid color, or a
    procedural **generator** evaluated in the same UV space, so all motion
-   controls apply to patterns too.
+   controls apply to patterns too. Each generator (`field()` in the WGSL) returns a
+   palette position and an intensity; the **palette** (up to 6 sRGB stops in the
+   uniforms, mirrored or cyclic) turns the position into a color, and the intensity
+   fades it over color A (the background). The test grid paints its own colors.
 5. Hue rotation, tint, opacity (with opacity LFO), then premultiplied output.
    Blend modes are separate pipelines with different blend states.
 
-Uniforms for all surfaces go into one buffer with dynamic offsets (stride = 256).
+Uniforms for all surfaces go into one buffer with dynamic offsets (1376 bytes per
+surface, padded to the device's offset alignment).
+
+**Shader Library thumbnails** use the same pipeline: `Renderer::render_thumbnails`
+builds a throwaway project with one 192×120 tile per preset and draws it into a
+separate atlas texture, only while the library window is open.
 
 Image sources are decoded with the `image` crate on the UI thread when first seen
 or when their path changes.
@@ -99,9 +111,20 @@ are egui modals (`Prompt`). Actions that would discard changes go through
 ## Editor interaction
 
 `editor.rs` holds selection (ordered; last = primary), view (zoom/pan, auto-fit),
-and the drag state machine: `Pan | Move | Corner | Marquee`.
+and the drag state machine: `Pan | Move | Corner | Marquee | Tf* | PenPoint | Anchor`.
 
-- **Hit testing** is front-to-back on unlocked, visible surfaces (point-in-polygon).
+- **Hit testing** is front-to-back on unlocked, visible surfaces (point-in-polygon
+  on the shape's outline, so clicking beside a star's tip misses it).
+- **Pen** (`Editor::pen`): canvas-space anchor points; the finished path becomes a
+  surface via `Surface::freeform`, whose corners are the path's bounding box.
+- **Edit Points** (`Editor::points`): anchors are stored in the surface's unit square
+  (`Surface::path`). Every edit goes through `Surface::move_path_point` /
+  `insert_path_point` / `remove_path_point`, which call `fit_frame_to_path`: the four
+  corners move onto the outline's bounds *through the current homography* and the
+  points are re-expressed in that frame. The shape stays exactly where it was (also
+  under perspective), and it never sticks out of the quad that gets drawn.
+- **Smooth points** use Catmull-Rom tangents as cubic Béziers (`shape::flatten`), so
+  the outline passes through every anchor and needs no handles.
 - **Corner handles** exist only on selected surfaces and take priority.
 - **Snapping**: candidates are corners of non-moving surfaces plus the canvas corners
   and center, within 10 screen px.
@@ -126,11 +149,12 @@ Operations that need different values per surface (e.g. **Stagger**) are explici
 - App state (window size, last opened project): eframe persistence
   (`~/Library/Application Support/OpenMapper` on macOS).
 
-## Known limitations (v0.2)
+## Known limitations (v0.3)
 
 - Output window placement is manual (drag to projector, then `F`). No monitor picker yet.
 - Video is H.264 only (no HEVC/ProRes/HAP yet), no audio, CPU decoding.
   No live camera, Syphon/Spout/NDI yet.
-- Surfaces are four-corner only. No mesh warp, no bezier/polygon masks.
+- No mesh warp. Free-form shapes have at most 64 points and no Bézier handles
+  (smooth points are automatic). Shapes have no holes (a ring needs a cutout).
 - No timeline or keyframes. Animation is parametric (LFO/rates).
 - No mipmaps on image textures, so heavily minified images may shimmer.

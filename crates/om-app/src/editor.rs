@@ -13,11 +13,17 @@
 //! - Free Transform (Cmd+T) replaces the corner handles with a bounding box:
 //!   handles scale (Shift proportional, Alt from center), dragging outside
 //!   rotates (Shift snaps to 15°), dragging inside moves. See `transform.rs`.
+//! - Pen (P): each click adds an anchor point (press and drag for a smooth
+//!   one); clicking the first point, double-clicking or Enter finishes.
+//! - Edit Points (double-click a free-form shape): drag anchors, click an
+//!   edge to add one, Alt-click or Delete removes, double-click toggles
+//!   smooth/corner. The math lives in `om_core::shape`.
 
 use egui::{Color32, Key, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, Vec2 as EVec2};
 use glam::{Affine2, Vec2};
 use om_core::geom::{point_in_polygon, quad_center};
-use om_core::{Project, SurfaceId};
+use om_core::shape::{MAX_PATH_POINTS, flatten_with_edges};
+use om_core::{Mask, PathPoint, Project, Surface, SurfaceId};
 
 use crate::theme;
 use crate::transform::{self, FreeTransform, HANDLES, Handle};
@@ -28,6 +34,10 @@ const SNAP_DISTANCE_PX: f32 = 10.0;
 const WELD_EPSILON: f32 = 0.5;
 /// Screen-space grab radius of free-transform handles.
 const TF_HANDLE_GRAB: f32 = 9.0;
+/// Screen-space grab distance of anchor points and path edges.
+const ANCHOR_GRAB: f32 = 7.0;
+/// Dragging this far (screen px) while placing a pen point makes it smooth.
+const SMOOTH_DRAG: f32 = 6.0;
 
 #[derive(Default)]
 pub struct Selection {
@@ -84,11 +94,21 @@ enum Drag {
     TfScale { start: Affine2, handle: Handle },
     TfRotate { start: Affine2, from: Vec2 },
     TfMove { start: Affine2, from: Vec2 },
+    PenPoint { index: usize, origin: Pos2 },
+    Anchor { id: SurfaceId, index: usize, start: Box<Surface> },
+}
+
+/// Anchor point editing on one free-form surface.
+pub struct PointEdit {
+    pub id: SurfaceId,
+    pub selected: Option<usize>,
 }
 
 pub struct Editor {
     pub selection: Selection,
     pub selected_source: Option<om_core::SourceId>,
+    /// Scroll the Sources list to the selected source on the next frame.
+    pub scroll_to_source: bool,
     pub zoom: f32,
     pan: EVec2,
     /// Keep the canvas fitted to the view until the user zooms or pans.
@@ -101,6 +121,11 @@ pub struct Editor {
     pub space_panned: bool,
     /// Active Free Transform session, if any.
     pub transform: Option<FreeTransform>,
+    /// Pen tool in progress: the anchor points placed so far (canvas px).
+    pub pen: Option<Vec<PathPoint>>,
+    /// A finished pen path; the app turns it into a surface.
+    pub finished_pen: Option<Vec<PathPoint>>,
+    pub points: Option<PointEdit>,
     last_rect: Rect,
 }
 
@@ -109,6 +134,7 @@ impl Default for Editor {
         Self {
             selection: Selection::default(),
             selected_source: None,
+            scroll_to_source: false,
             zoom: 1.0,
             pan: EVec2::ZERO,
             auto_fit: true,
@@ -117,6 +143,9 @@ impl Default for Editor {
             show_outlines: true,
             space_panned: false,
             transform: None,
+            pen: None,
+            finished_pen: None,
+            points: None,
             last_rect: Rect::NOTHING,
         }
     }
@@ -170,6 +199,51 @@ impl Editor {
             tf.xf = transform::moved(tf.xf, delta);
             tf.apply(project);
         }
+    }
+
+    /// Selects a source and scrolls the Sources list to it.
+    pub fn reveal_source(&mut self, id: om_core::SourceId) {
+        self.selected_source = Some(id);
+        self.scroll_to_source = true;
+    }
+
+    /// Finishes the pen path (if it has enough points) and leaves pen mode.
+    pub fn finish_pen(&mut self) {
+        if let Some(points) = self.pen.take()
+            && points.len() >= 3
+        {
+            self.finished_pen = Some(points);
+        }
+    }
+
+    /// Starts editing the anchor points of `id` (which must be free-form).
+    pub fn edit_points(&mut self, id: SurfaceId) {
+        self.transform = None;
+        self.pen = None;
+        self.selection.set(vec![id]);
+        self.points = Some(PointEdit { id, selected: None });
+    }
+
+    /// Removes the selected anchor point. Returns false if there is none
+    /// (or the shape is down to three points).
+    pub fn delete_point(&mut self, project: &mut Project) -> bool {
+        let Some(pe) = &mut self.points else { return false };
+        let (Some(i), Some(s)) = (pe.selected, project.surface_mut(pe.id)) else { return false };
+        let removed = s.remove_path_point(i);
+        if removed {
+            pe.selected = None;
+        }
+        removed
+    }
+
+    /// Moves the selected anchor point by `delta` canvas pixels.
+    pub fn nudge_point(&mut self, project: &mut Project, delta: Vec2) -> bool {
+        let Some(pe) = &self.points else { return false };
+        let (Some(i), Some(s)) = (pe.selected, project.surface_mut(pe.id)) else { return false };
+        if let Some(pos) = s.path_on_canvas().get(i).copied() {
+            s.move_path_point(i, pos + delta);
+        }
+        true
     }
 
     pub fn fit(&mut self) {
@@ -248,8 +322,74 @@ impl Editor {
         if self.transform.as_ref().is_some_and(|tf| tf.ids != self.selection.surfaces) {
             self.transform = None;
         }
+        if let Some(pe) = &self.points
+            && (self.selection.surfaces != [pe.id]
+                || project.surface(pe.id).is_none_or(|s| s.mask != Mask::Freeform || s.locked || !s.visible))
+        {
+            self.points = None;
+        }
 
-        if resp.drag_started() {
+        // Pen and point editing get the first say over presses.
+        let mut press_used = false;
+        if resp.drag_started() && !(space || resp.dragged_by(egui::PointerButton::Middle)) {
+            let start = press_origin.unwrap_or(rect.center());
+            if self.pen.is_some() {
+                let p = snap_pen_point(project, xf.to_canvas(start), snap, snap_dist);
+                if let Some(index) = self.pen_add(&xf, p) {
+                    self.drag = Drag::PenPoint { index, origin: start };
+                }
+                press_used = true;
+            } else if let Some(pe) = &mut self.points
+                && let Some(s) = project.surface_mut(pe.id)
+            {
+                let target = hit_anchor(s, &xf, start).or_else(|| {
+                    let (edge, pos) = hit_edge(s, &xf, start)?;
+                    s.insert_path_point(edge, pos)
+                });
+                if let Some(index) = target {
+                    pe.selected = Some(index);
+                    self.drag = Drag::Anchor { id: s.id, index, start: Box::new(s.clone()) };
+                    press_used = true;
+                } else {
+                    self.points = None;
+                }
+            }
+        }
+        if !press_used && self.pen.is_some() {
+            if resp.double_clicked() {
+                self.finish_pen();
+            } else if resp.clicked()
+                && let Some(p) = resp.interact_pointer_pos()
+            {
+                let p = snap_pen_point(project, xf.to_canvas(p), snap, snap_dist);
+                self.pen_add(&xf, p);
+            }
+        } else if !press_used
+            && let Some(pe) = &mut self.points
+            && let Some(s) = project.surface_mut(pe.id)
+            && (resp.clicked() || resp.double_clicked())
+            && let Some(p) = resp.interact_pointer_pos()
+        {
+            if let Some(i) = hit_anchor(s, &xf, p) {
+                if alt {
+                    s.remove_path_point(i);
+                    pe.selected = None;
+                } else if resp.double_clicked() {
+                    s.toggle_smooth(i);
+                    pe.selected = Some(i);
+                } else {
+                    pe.selected = Some(i);
+                }
+            } else if let Some((edge, pos)) = hit_edge(s, &xf, p) {
+                pe.selected = s.insert_path_point(edge, pos);
+            } else if !point_in_polygon(xf.to_canvas(p), &s.outline()) {
+                self.points = None;
+                self.selection.clear();
+            }
+        }
+        let tool_active = self.pen.is_some() || self.points.is_some();
+
+        if resp.drag_started() && !press_used {
             let start = press_origin.unwrap_or(rect.center());
             let middle = resp.dragged_by(egui::PointerButton::Middle);
             if space || middle {
@@ -384,6 +524,32 @@ impl Editor {
                         tf.apply(project);
                     }
                 }
+                Drag::PenPoint { index, origin } => {
+                    if let (Some(pen), Some(p)) = (&mut self.pen, pointer)
+                        && p.distance(*origin) > SMOOTH_DRAG
+                        && let Some(pt) = pen.get_mut(*index)
+                    {
+                        pt.smooth = true;
+                    }
+                }
+                Drag::Anchor { id, index, start } => {
+                    if let Some(p) = pointer {
+                        let origin = start.path_on_canvas()[*index];
+                        let mut pos = origin + (xf.to_canvas(p) - xf.to_canvas(press_origin.unwrap_or(p)));
+                        if snap {
+                            let candidates = snap_candidates(project, &[*id], None);
+                            if let Some((_, target)) = nearest(&candidates, pos, snap_dist) {
+                                pos = target;
+                            }
+                        }
+                        let mut moved = (**start).clone();
+                        moved.move_path_point(*index, pos);
+                        if let Some(s) = project.surface_mut(*id) {
+                            s.corners = moved.corners;
+                            s.path = moved.path;
+                        }
+                    }
+                }
                 Drag::None => {}
             }
         }
@@ -392,7 +558,9 @@ impl Editor {
             self.drag = Drag::None;
         }
 
-        if let Some(tf) = &self.transform {
+        if tool_active {
+            // Handled above.
+        } else if let Some(tf) = &self.transform {
             // In transform mode clicks don't change the selection;
             // double-clicking inside the box applies (like Photoshop).
             if resp.double_clicked()
@@ -400,6 +568,11 @@ impl Editor {
             {
                 self.transform = None;
             }
+        } else if resp.double_clicked()
+            && let Some(id) = resp.interact_pointer_pos().and_then(|p| hit_surface(project, xf.to_canvas(p)))
+            && project.surface(id).is_some_and(|s| s.mask == Mask::Freeform)
+        {
+            self.edit_points(id);
         } else if resp.clicked() {
             let p = resp.interact_pointer_pos().unwrap_or(rect.center());
             if let Some((id, idx)) = self.hit_corner(project, &xf, p) {
@@ -421,6 +594,16 @@ impl Editor {
                 egui::CursorIcon::Grabbing
             } else if space {
                 egui::CursorIcon::Grab
+            } else if self.pen.is_some() {
+                egui::CursorIcon::Crosshair
+            } else if let Some(s) = self.points.as_ref().and_then(|pe| project.surface(pe.id)) {
+                if matches!(self.drag, Drag::Anchor { .. }) || hit_anchor(s, &xf, hp).is_some() {
+                    egui::CursorIcon::Crosshair
+                } else if hit_edge(s, &xf, hp).is_some() {
+                    egui::CursorIcon::Cell
+                } else {
+                    egui::CursorIcon::Default
+                }
             } else if let Some(tf) = &self.transform {
                 tf_cursor(tf, &xf, &self.drag, hp)
             } else if matches!(self.drag, Drag::Corner { .. }) || self.hit_corner(project, &xf, hp).is_some()
@@ -447,17 +630,41 @@ impl Editor {
         painter.rect_stroke(canvas_rect, 0.0, Stroke::new(1.0, Color32::from_gray(90)), StrokeKind::Outside);
 
         let hovered = hover.filter(|p| rect.contains(*p)).and_then(|p| hit_surface(project, xf.to_canvas(p)));
-        let in_transform = self.transform.is_some();
-        draw_overlays(&painter, project, &xf, &self.selection, hovered, self.show_outlines, !in_transform);
-        if let Some(tf) = &self.transform {
-            draw_transform_box(&painter, tf, &xf);
+        let show_handles = self.transform.is_none() && !tool_active;
+        draw_overlays(&painter, project, &xf, &self.selection, hovered, self.show_outlines, show_handles);
+        let hint = |text: &str| {
             painter.text(
                 rect.left_top() + EVec2::new(10.0, 8.0),
                 egui::Align2::LEFT_TOP,
-                "Free Transform: drag handles to scale (Shift: keep proportions, Alt: from center) · \
-                 drag outside to rotate (Shift: 15° steps) · Enter applies, Esc cancels",
+                text,
                 egui::FontId::proportional(12.0),
                 Color32::from_gray(200),
+            );
+        };
+        if let Some(pen) = &self.pen {
+            let cursor = hover
+                .filter(|p| rect.contains(*p))
+                .map(|p| snap_pen_point(project, xf.to_canvas(p), snap, snap_dist));
+            draw_pen(&painter, &xf, pen, cursor);
+            hint(
+                "Pen: click to add points (drag for a curve point) · click the first point, double-click or \
+                  Enter to finish · Backspace removes the last point · Esc cancels",
+            );
+        }
+        if let Some(pe) = &self.points
+            && let Some(s) = project.surface(pe.id)
+        {
+            draw_points(&painter, &xf, s, pe.selected);
+            hint(
+                "Edit Points: drag points · click an edge to add one · Alt-click or Delete removes · \
+                  double-click a point for curve/corner · Enter or Esc when done",
+            );
+        }
+        if let Some(tf) = &self.transform {
+            draw_transform_box(&painter, tf, &xf);
+            hint(
+                "Free Transform: drag handles to scale (Shift: keep proportions, Alt: from center) · \
+                 drag outside to rotate (Shift: 15° steps) · Enter applies, Esc cancels",
             );
         }
 
@@ -480,6 +687,113 @@ impl Editor {
             }
         }
         best.map(|(_, id, i)| (id, i))
+    }
+
+    /// Adds a pen point at `p`, or finishes the path when `p` is on the
+    /// first point. Returns the new point's index.
+    fn pen_add(&mut self, xf: &ViewXf, p: Vec2) -> Option<usize> {
+        let pen = self.pen.as_mut()?;
+        if pen.len() >= 3 && xf.to_screen(pen[0].pos).distance(xf.to_screen(p)) <= ANCHOR_GRAB {
+            self.finish_pen();
+            return None;
+        }
+        if pen.len() >= MAX_PATH_POINTS || pen.last().is_some_and(|last| last.pos.distance(p) < 0.5) {
+            return None;
+        }
+        pen.push(PathPoint::corner(p));
+        Some(pen.len() - 1)
+    }
+}
+
+fn snap_pen_point(project: &Project, p: Vec2, snap: bool, max: f32) -> Vec2 {
+    if !snap {
+        return p;
+    }
+    nearest(&snap_candidates(project, &[], None), p, max).map_or(p, |(_, target)| target)
+}
+
+/// Anchor point of a free-form surface under the screen point `p`.
+fn hit_anchor(s: &Surface, xf: &ViewXf, p: Pos2) -> Option<usize> {
+    s.path_on_canvas()
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (xf.to_screen(*c).distance(p), i))
+        .filter(|(d, _)| *d <= ANCHOR_GRAB)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, i)| i)
+}
+
+/// Edge of a free-form surface near the screen point `p`: the anchor the
+/// edge starts at and the closest canvas point on it.
+fn hit_edge(s: &Surface, xf: &ViewXf, p: Pos2) -> Option<(usize, Vec2)> {
+    let h = om_core::Homography::from_corners(s.corners);
+    let pts: Vec<(Pos2, usize)> =
+        flatten_with_edges(&s.path).into_iter().map(|(uv, e)| (xf.to_screen(h.map(uv)), e)).collect();
+    let mut best: Option<(f32, usize, Pos2)> = None;
+    for i in 0..pts.len() {
+        let ((a, edge), (b, _)) = (pts[i], pts[(i + 1) % pts.len()]);
+        let ab = b - a;
+        let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+        let q = a + ab * t;
+        let d = q.distance(p);
+        if d <= ANCHOR_GRAB && best.is_none_or(|(bd, ..)| d < bd) {
+            best = Some((d, edge, q));
+        }
+    }
+    best.map(|(_, edge, q)| (edge, xf.to_canvas(q)))
+}
+
+fn draw_pen(painter: &egui::Painter, xf: &ViewXf, pen: &[PathPoint], cursor: Option<Vec2>) {
+    let mut pts = pen.to_vec();
+    pts.extend(cursor.map(PathPoint::corner));
+    let n = pts.len();
+    if n >= 2 {
+        // The path so far, plus a faint closing edge back to the start.
+        let line = flatten_with_edges(&pts);
+        for i in 0..line.len() {
+            let (a, edge) = line[i];
+            let b = line[(i + 1) % line.len()].0;
+            let closing = edge == n - 1;
+            if closing && n < 3 {
+                continue;
+            }
+            let stroke = if closing {
+                Stroke::new(1.0, theme::ACCENT.linear_multiply(0.4))
+            } else {
+                Stroke::new(1.5, theme::ACCENT)
+            };
+            painter.line_segment([xf.to_screen(a), xf.to_screen(b)], stroke);
+        }
+    }
+    let closing = pen.len() >= 3
+        && cursor.is_some_and(|c| xf.to_screen(c).distance(xf.to_screen(pen[0].pos)) <= ANCHOR_GRAB);
+    for (i, p) in pen.iter().enumerate() {
+        let fill = if i == 0 && closing { theme::ACCENT } else { Color32::WHITE };
+        draw_anchor(painter, xf.to_screen(p.pos), p.smooth, fill, i == 0);
+    }
+}
+
+fn draw_points(painter: &egui::Painter, xf: &ViewXf, s: &Surface, selected: Option<usize>) {
+    let frame: Vec<Pos2> = s.corners.iter().map(|c| xf.to_screen(*c)).collect();
+    let mut closed = frame.clone();
+    closed.push(frame[0]);
+    painter.extend(Shape::dashed_line(&closed, Stroke::new(1.0, theme::OUTLINE), 3.0, 3.0));
+    for (i, (c, p)) in s.path_on_canvas().iter().zip(&s.path).enumerate() {
+        let fill = if selected == Some(i) { theme::ACCENT } else { Color32::WHITE };
+        draw_anchor(painter, xf.to_screen(*c), p.smooth, fill, false);
+    }
+}
+
+/// Square for corner points, circle for smooth ones (like Illustrator).
+fn draw_anchor(painter: &egui::Painter, p: Pos2, smooth: bool, fill: Color32, big: bool) {
+    let r = if big { 5.5 } else { 4.0 };
+    let stroke = Stroke::new(1.5, theme::ACCENT);
+    if smooth {
+        painter.circle(p, r, fill, stroke);
+    } else {
+        let rect = Rect::from_center_size(p, EVec2::splat(r * 2.0));
+        painter.rect_filled(rect, 0.0, fill);
+        painter.rect_stroke(rect, 0.0, stroke, StrokeKind::Middle);
     }
 }
 
@@ -551,7 +865,7 @@ fn hit_surface(project: &Project, p: Vec2) -> Option<SurfaceId> {
         .iter()
         .rev()
         .filter(|s| s.visible && !s.locked)
-        .find(|s| point_in_polygon(p, &s.corners))
+        .find(|s| point_in_polygon(p, &s.outline()))
         .map(|s| s.id)
 }
 
@@ -617,7 +931,14 @@ pub fn draw_overlays(
         if !show_outlines && !selected {
             continue;
         }
-        let pts: Vec<Pos2> = s.corners.iter().map(|c| xf.to_screen(*c)).collect();
+        let pts: Vec<Pos2> = s.outline().iter().map(|c| xf.to_screen(*c)).collect();
+        let frame: Vec<Pos2> = s.corners.iter().map(|c| xf.to_screen(*c)).collect();
+        if selected && s.mask != Mask::Quad && show_handles {
+            painter.add(Shape::closed_line(
+                frame.clone(),
+                Stroke::new(1.0, theme::ACCENT.linear_multiply(0.35)),
+            ));
+        }
         let stroke = if selected {
             Stroke::new(1.5, theme::ACCENT)
         } else if hovered == Some(s.id) {
@@ -637,7 +958,7 @@ pub fn draw_overlays(
         }
 
         if show_outlines {
-            let label_pos = pts[0] + EVec2::new(6.0, 4.0);
+            let label_pos = frame[0] + EVec2::new(6.0, 4.0);
             painter.text(
                 label_pos,
                 egui::Align2::LEFT_TOP,
@@ -676,11 +997,12 @@ pub fn draw_output_overlays(painter: &egui::Painter, rect: Rect, project: &Proje
     };
     for s in project.surfaces.iter().filter(|s| s.visible) {
         let selected = selection.contains(s.id);
-        let pts: Vec<Pos2> = s.corners.iter().map(|c| map(*c)).collect();
+        let outline: Vec<Pos2> = s.outline().iter().map(|c| map(*c)).collect();
         let stroke =
             if selected { Stroke::new(2.0, theme::ACCENT) } else { Stroke::new(1.0, theme::OUTLINE) };
-        painter.add(Shape::closed_line(pts.clone(), stroke));
+        painter.add(Shape::closed_line(outline, stroke));
         if selected {
+            let pts: Vec<Pos2> = s.corners.iter().map(|c| map(*c)).collect();
             for (i, p) in pts.iter().enumerate() {
                 let active = selection.corner == Some((s.id, i));
                 painter.circle(*p, if active { 7.0 } else { 4.0 }, theme::ACCENT, Stroke::NONE);
@@ -729,6 +1051,40 @@ mod tests {
         assert!(pts.contains(&Vec2::new(300.0, 200.0)));
         let hit = nearest(&pts, Vec2::new(296.0, 203.0), 10.0).unwrap();
         assert_eq!(hit.1, Vec2::new(300.0, 200.0));
+    }
+
+    #[test]
+    fn hit_test_follows_the_shape() {
+        let mut p = two_adjacent();
+        p.surfaces[0].mask = Mask::Diamond;
+        // Inside a's frame but outside its diamond.
+        assert_eq!(hit_surface(&p, Vec2::new(105.0, 105.0)), None);
+        assert_eq!(hit_surface(&p, Vec2::new(150.0, 150.0)), Some(p.surfaces[0].id));
+    }
+
+    #[test]
+    fn pen_closes_on_first_point_and_skips_duplicates() {
+        let xf = ViewXf { origin: Pos2::ZERO, zoom: 1.0 };
+        let mut e = Editor { pen: Some(Vec::new()), ..Default::default() };
+        for p in [(0.0, 0.0), (100.0, 0.0), (100.0, 0.0), (50.0, 80.0)] {
+            e.pen_add(&xf, Vec2::new(p.0, p.1));
+        }
+        assert_eq!(e.pen.as_ref().unwrap().len(), 3, "the repeated point is skipped");
+        e.pen_add(&xf, Vec2::new(2.0, 1.0));
+        assert!(e.pen.is_none());
+        assert_eq!(e.finished_pen.as_ref().map(Vec::len), Some(3));
+    }
+
+    #[test]
+    fn edges_are_found_between_anchors() {
+        let mut s = Surface::rect(SurfaceId(1), "s", Vec2::ZERO, Vec2::splat(100.0));
+        s.make_freeform();
+        let xf = ViewXf { origin: Pos2::ZERO, zoom: 1.0 };
+        let (edge, pos) = hit_edge(&s, &xf, Pos2::new(50.0, 3.0)).unwrap();
+        assert_eq!(edge, 0);
+        assert!(pos.distance(Vec2::new(50.0, 0.0)) < 1e-3);
+        assert_eq!(hit_anchor(&s, &xf, Pos2::new(99.0, 98.0)), Some(2));
+        assert!(hit_edge(&s, &xf, Pos2::new(50.0, 50.0)).is_none());
     }
 
     #[test]

@@ -21,7 +21,7 @@ this first, then [docs/architecture.md](docs/architecture.md).
 
 | Crate | Purpose | May depend on |
 | --- | --- | --- |
-| `om-core` | Document model (`Project`, `Surface`, `Source`), perspective math, animation evaluation, undo history, multi-edit diff. Pure Rust, no GPU/UI. | glam, serde |
+| `om-core` | Document model (`Project`, `Surface`, `Source`), shapes and free-form paths (`shape`), shader presets (`catalog`), perspective math, animation evaluation, undo history, multi-edit diff. Pure Rust, no GPU/UI. | glam, serde |
 | `om-media` | Video decoding: MP4 demux (`mp4`) + H.264 (`openh264`, built from source) on a thread per video. No GPU/UI. | mp4, openh264 |
 | `om-render` | wgpu compositor. Renders a `Project` at time *t* into one `Rgba8Unorm` texture. WGSL in `surface.wgsl`. Uploads video frames. | om-core, om-media, wgpu |
 | `om-app` | Binary `openmapper`. eframe/egui UI, canvas editor, projector window, file I/O dialogs. | everything |
@@ -116,17 +116,26 @@ read the source in `~/.cargo/registry/src/*/egui-0.37.0/` rather than going by m
 - **New surface property:** add the field to `Surface` (with a default), use it in
   `om_render::surface_uniforms` + `surface.wgsl` if it affects rendering, and add a
   control in `panels/properties.rs`. Multi-edit and undo come for free.
-- **New generator pattern:** add a variant to `Pattern` (and to `Pattern::ALL`, at the
-  end, because the shader index is the position), then add a `case` in `generator()`
-  in `surface.wgsl`. The `shader_indices_are_stable` test guards existing indices.
+- **New shader (generator pattern):** add a variant to `Pattern` (and to `Pattern::ALL`,
+  at the end, because the shader index is the position), a `label`, and a
+  `detail_label` if it uses `detail`. Add a `case` in `field()` in `surface.wgsl`
+  returning (palette position, intensity); use `p`/`r`/`a` (aspect-corrected) for
+  anything round, and keep angle terms seam-free (`aa_square_w`, even multiples for
+  palette positions). Add a preset to `om_core::catalog` so it shows in the Shader
+  Library (a test checks every pattern has one), then look at it in the library in Xvfb.
+  The `shader_indices_are_stable` test guards existing indices.
+- **New built-in shape:** add a `Mask` variant (append; it's serialized by name), add it
+  to `Mask::SHAPES` and give it `anchors()` in `om_core::shape`. It is drawn as a polygon
+  automatically; the `built_in_shapes_fill_the_unit_square` test checks it.
 - **New media type:** add a `SourceKind` variant (with `media_path()` if file-based),
   load it in `om_render::textures::TextureCache::sync`, accept its extension in
   `OpenMapperApp::import_media`. Decoding that takes time belongs on a thread in `om-media`.
 - **New animation parameter:** extend `Animation` and apply it in `anim::evaluate`,
   with a unit test.
-- **New canvas tool/mode:** follow Free Transform (`transform.rs`): pure math functions
-  with unit tests, state on `Editor`, `Drag` variants for its gestures, actions for
-  enter/apply/cancel, and apply it automatically when the selection changes.
+- **New canvas tool/mode:** follow Free Transform (`transform.rs`) or the Pen / Edit
+  Points tools: pure math functions with unit tests (in `om-core` when the renderer
+  needs them too), state on `Editor`, `Drag` variants for its gestures, actions for
+  enter/apply/cancel, and leave the mode automatically when the selection changes.
 - **New panel or action:** add an `Action` variant, handle it in `run_action`, and wire
   the menu item, shortcut and button.
 

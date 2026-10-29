@@ -4,7 +4,9 @@
 use std::path::PathBuf;
 
 use glam::Vec2;
-use om_core::{Generator, History, Mask, Pattern, Project, SourceId, SourceKind, Surface, SurfaceId};
+use om_core::{
+    Generator, History, Mask, PathPoint, Pattern, Project, SourceId, SourceKind, Surface, SurfaceId,
+};
 
 pub struct Document {
     pub project: Project,
@@ -103,6 +105,7 @@ impl Document {
                 scale: 8.0,
                 speed: 0.0,
                 angle: 0.0,
+                ..Default::default()
             }),
         )
     }
@@ -135,6 +138,22 @@ impl Document {
         s.source = None;
         s.name = name;
         id
+    }
+
+    /// Adds a free-form surface through `points` (canvas pixels) on top.
+    pub fn add_freeform(&mut self, points: &[PathPoint]) -> Option<SurfaceId> {
+        let source = self.default_source();
+        let id = self.project.new_surface_id();
+        let name = self.project.unique_surface_name("Shape");
+        let mut s = Surface::freeform(id, name, points)?;
+        s.source = Some(source);
+        self.project.surfaces.push(s);
+        Some(id)
+    }
+
+    /// Adds a source made from a shader library preset.
+    pub fn add_generator(&mut self, name: &str, generator: Generator) -> SourceId {
+        self.project.add_source(name, SourceKind::Generator(generator))
     }
 
     /// Duplicates surfaces (placed above the originals, slightly offset).
@@ -225,6 +244,19 @@ mod tests {
         assert!(top.cutout);
         assert_eq!(top.source, None);
         assert_eq!(top.name, "Cutout 1");
+    }
+
+    #[test]
+    fn add_freeform_needs_three_points() {
+        let mut doc = Document::new(Project::empty(), None);
+        let pts: Vec<PathPoint> = [(10.0, 10.0), (200.0, 40.0), (90.0, 150.0)]
+            .map(|(x, y)| PathPoint::corner(glam::Vec2::new(x, y)))
+            .to_vec();
+        assert!(doc.add_freeform(&pts[..2]).is_none());
+        let id = doc.add_freeform(&pts).unwrap();
+        let s = doc.project.surface(id).unwrap();
+        assert_eq!((s.name.as_str(), s.mask), ("Shape 1", Mask::Freeform));
+        assert!(s.source.is_some());
     }
 
     #[test]

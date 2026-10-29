@@ -99,13 +99,54 @@ fn surface_props(ui: &mut Ui, app: &mut OpenMapperApp, s: &mut Surface, count: u
                 ui.end_row();
             }
 
-            prop_label(ui, "Shape", "Cut-out within the four corners");
-            egui::ComboBox::from_id_salt("mask").selected_text(s.mask.label()).show_ui(ui, |ui| {
-                for m in Mask::ALL {
-                    ui.selectable_value(&mut s.mask, m, m.label());
-                }
+            prop_label(
+                ui,
+                "Shape",
+                "The shape inside the four corners. It follows corner pinning and transforms.",
+            );
+            ui.horizontal(|ui| {
+                super::shape_icon(ui, s.mask, &s.path, 18.0, ui.visuals().text_color());
+                egui::ComboBox::from_id_salt("mask").selected_text(s.mask.label()).show_ui(ui, |ui| {
+                    for m in Mask::SHAPES {
+                        ui.selectable_value(&mut s.mask, m, m.label());
+                    }
+                });
             });
             ui.end_row();
+
+            if count == 1 {
+                prop_label(ui, "", "");
+                ui.horizontal(|ui| {
+                    let hint = if s.mask == Mask::Freeform {
+                        "Move, add and remove the shape's points (or double-click it on the canvas)"
+                    } else {
+                        "Turn this shape into points you can move, add and remove"
+                    };
+                    if ui
+                        .add_enabled(!s.locked, egui::Button::new("✎ Edit Points"))
+                        .on_hover_text(hint)
+                        .clicked()
+                    {
+                        app.act(Action::EditPoints);
+                    }
+                    if s.mask == Mask::Freeform {
+                        ui.label(RichText::new(format!("{} points", s.path.len())).weak());
+                    }
+                });
+                ui.end_row();
+                if s.mask == Mask::Freeform {
+                    prop_label(ui, "Points", "Curve points round the outline, corner points keep it sharp");
+                    ui.horizontal(|ui| {
+                        for (label, smooth) in [("All curves", true), ("All corners", false)] {
+                            if ui.small_button(label).clicked() {
+                                s.path.iter_mut().for_each(|p| p.smooth = smooth);
+                                s.fit_frame_to_path();
+                            }
+                        }
+                    });
+                    ui.end_row();
+                }
+            }
 
             prop_label(
                 ui,

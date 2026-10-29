@@ -22,6 +22,12 @@ Cutout surfaces, H.264 video sources (MP4/MOV), async file dialogs (fixes Save /
 Save As / Import), in-app save prompts. Tracker:
 [trackers/0003-cutouts-video-dialogs.md](trackers/0003-cutouts-video-dialogs.md).
 
+## ✅ v0.3: Shapes, Pen, Shader Library (done)
+
+11 new built-in shapes, free-form shapes (Pen + Edit Points), 18 new shaders with
+palettes and a live-preview Shader Library. Tracker:
+[trackers/0004-shapes-pen-shaders.md](trackers/0004-shapes-pen-shaders.md).
+
 ## Next candidates (pick from feedback)
 
 ### Output & show workflow
@@ -49,7 +55,7 @@ Save As / Import), in-app save prompts. Tracker:
 - Scenes/cues: snapshot surface states and crossfade between them.
 
 ### Geometry
-- Polygon surfaces (n points), bezier masks.
+- Bézier handles on free-form points; shapes with holes; boolean shape operations.
 - Mesh warp (grid subdivision) for curved objects.
 - Groups (Photoshop-style layer folders) with group transforms.
 - Numeric entry in the Free Transform readout (type W/H/angle), Distort/Perspective modes.
@@ -57,7 +63,9 @@ Save As / Import), in-app save prompts. Tracker:
 
 ### Effects
 - Per-surface effect stack (blur, edge glow, kaleidoscope, color grading, invert).
-- Shader generators editable as WGSL/ISF.
+- Import ISF shaders (what HeavyM uses), so she can bring shaders from the web; a
+  WGSL editor with live preview. Favorites and user presets in the Shader Library.
+- More library shaders driven by her picks; audio-reactive shader parameters.
 
 ### macOS polish
 - Native menu bar (`muda`) and app icon, file associations (`.omap` double-click).

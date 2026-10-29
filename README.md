@@ -7,8 +7,8 @@ animate them. The interface feels familiar to anyone who knows Photoshop.
 Written in Rust (egui + wgpu). macOS is the primary target; Linux is the
 development platform; Windows builds come for free.
 
-> Status: **v0.2.** Enough to map a box, a wall or a few shapes, fill them with
-> patterns, images or video, and make them move. See [docs/roadmap.md](docs/roadmap.md)
+> Status: **v0.3.** Enough to map a box, a wall or a few shapes, fill them with
+> shaders, images or video, and make them move. See [docs/roadmap.md](docs/roadmap.md)
 > for what comes next.
 
 ## Why another mapper?
@@ -24,15 +24,22 @@ development platform; Windows builds come for free.
 
 ## What it can do
 
-- Perspective-correct **four-corner surfaces** with Quad, Ellipse or Triangle shape.
+- Perspective-correct **four-corner surfaces** in 14 shapes (quad, ellipse, triangle,
+  rounded rectangle, diamond, pentagon, hexagon, octagon, star, burst, heart, cross,
+  arrow, bolt), all following corner pinning.
+- **Free-form shapes**: draw your own with the **Pen** (`P`), or turn any shape into
+  points with **Edit Points**: drag points, click an edge to add one, curve or corner points.
 - **Free Transform** (`Cmd+T`): scale, rotate and move one or many surfaces with a
   bounding box, just like Photoshop (Shift = proportional / 15° steps, Alt = from center).
 - **Cutouts**: a shape that cuts a hole in every surface below it (windows, doors,
   anything in front of the wall). Works with ellipse/triangle shapes, feather and opacity.
 - **Corner snapping** and **welded corners**: faces that share a corner move together,
   which makes mapping a cube easy. Hold Alt/Option to bypass either.
-- **Sources**: solid colors, seven animated GPU **patterns** (gradient, checker, stripes,
-  rings, noise, plasma, calibration test grid), **images** (PNG/JPEG/GIF/WebP/BMP/TGA)
+- **Shader Library** (`Cmd+L`): 26 animated, live-previewed shaders (tunnel, kaleidoscope,
+  hypno spiral, liquid, Julia fractal, lava lamp, fire, aurora, warp speed, digital rain…),
+  each with color palettes and an extra control, all editable after adding.
+- **Sources**: solid colors, the GPU shaders above (including a calibration test grid),
+  **images** (PNG/JPEG/GIF/WebP/BMP/TGA)
   and **videos** (H.264 in MP4/MOV, looping, synced to the play clock). Import from the
   menu or by drag & drop.
 - **Fit** (whole texture per surface) or **Span** (one texture across the whole canvas)
@@ -67,6 +74,9 @@ macOS bundles (built by GitHub Actions) and Windows.
 | --- | --- |
 | `Space` | Play / pause (hold and drag to pan) |
 | `Q` | Add quad |
+| `P` | Pen: draw a free-form shape (`Enter` finish, `Esc` cancel) |
+| Double-click a free-form shape | Edit its points (`Delete` removes the selected point) |
+| `Cmd+L` | Shader Library |
 | `Cmd+T` | Free Transform (then `Enter` apply, `Esc` cancel) |
 | Click / Shift-click / Cmd-click | Select / add to selection |
 | Drag on empty canvas | Marquee select |

@@ -6,14 +6,14 @@ use std::time::Instant;
 
 use egui::{Key, KeyboardShortcut, Modifiers};
 use glam::Vec2;
-use om_core::{FILE_EXTENSION, Mask, Project, SourceId, SourceKind};
+use om_core::{FILE_EXTENSION, Generator, Mask, Project, SourceId, SourceKind};
 use om_render::{Renderer, VIDEO_EXTENSIONS};
 
 use crate::dialogs::{self, FileDialogs, Kind, Prompt, PromptAnswer, Purpose, Then};
 use crate::document::Document;
 use crate::editor::Editor;
 use crate::output::OutputWindow;
-use crate::panels;
+use crate::panels::{self, Library};
 
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tga"];
 const LAST_PROJECT_KEY: &str = "last_project";
@@ -42,6 +42,8 @@ pub mod shortcuts {
     pub const OUTPUT: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::Enter);
     pub const ADD_QUAD: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Q);
     pub const FREE_TRANSFORM: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::T);
+    pub const PEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::P);
+    pub const LIBRARY: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::L);
 }
 
 /// Everything the user can trigger from menus, toolbar, panels or keys.
@@ -83,6 +85,23 @@ pub enum Action {
     FreeTransform,
     ApplyTransform,
     CancelTransform,
+    /// P: start (or finish) drawing a free-form shape.
+    Pen,
+    FinishPen,
+    CancelPen,
+    RemovePenPoint,
+    /// Edit the anchor points of the selected surface (turns built-in
+    /// shapes into free-form ones).
+    EditPoints,
+    ExitPoints,
+    DeletePoint,
+    ToggleLibrary,
+    /// Add shader library preset `index` as a source; with `apply`, also
+    /// show it on the selected surfaces.
+    UsePreset {
+        index: usize,
+        apply: bool,
+    },
 }
 
 pub struct Transport {
@@ -109,6 +128,7 @@ pub struct OpenMapperApp {
     pub transport: Transport,
     pub output: OutputWindow,
     pub renderer: Renderer,
+    pub library: Library,
     pub stagger_step: f32,
     render_state: egui_wgpu::RenderState,
     output_tex: egui::TextureId,
@@ -160,6 +180,7 @@ impl OpenMapperApp {
             transport: Transport { playing: true, time: 0.0, last_tick: None },
             output: OutputWindow::default(),
             renderer,
+            library: Library::default(),
             stagger_step: 0.25,
             render_state,
             output_tex,
@@ -201,6 +222,8 @@ impl OpenMapperApp {
         }
         let text_focus = ctx.egui_wants_keyboard_input();
         let transforming = self.editor.transform.is_some();
+        let pen = self.editor.pen.is_some();
+        let points = self.editor.points.is_some();
         let mut acts = Vec::new();
         ctx.input_mut(|i| {
             // Order matters: shortcuts with Shift must be checked first.
@@ -210,6 +233,7 @@ impl OpenMapperApp {
                 (OPEN, Action::Open),
                 (NEW, Action::NewDemo),
                 (OUTPUT, Action::ToggleOutput),
+                (LIBRARY, Action::ToggleLibrary),
             ];
             for (sc, a) in table {
                 if i.consume_shortcut(sc) {
@@ -237,6 +261,7 @@ impl OpenMapperApp {
                 (ZOOM_OUT, Action::ZoomBy(0.8)),
                 (ADD_QUAD, Action::AddSurface(Mask::Quad)),
                 (FREE_TRANSFORM, Action::FreeTransform),
+                (PEN, Action::Pen),
             ];
             for (sc, a) in table {
                 if i.consume_shortcut(sc) {
@@ -247,13 +272,33 @@ impl OpenMapperApp {
                 acts.push(Action::Redo);
             }
             if i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::NONE, Key::Backspace) {
-                acts.push(Action::Delete);
+                acts.push(if pen {
+                    Action::RemovePenPoint
+                } else if points {
+                    Action::DeletePoint
+                } else {
+                    Action::Delete
+                });
             }
             if i.consume_key(Modifiers::NONE, Key::Escape) {
-                acts.push(if transforming { Action::CancelTransform } else { Action::Deselect });
+                acts.push(if pen {
+                    Action::CancelPen
+                } else if points {
+                    Action::ExitPoints
+                } else if transforming {
+                    Action::CancelTransform
+                } else {
+                    Action::Deselect
+                });
             }
-            if transforming && i.consume_key(Modifiers::NONE, Key::Enter) {
-                acts.push(Action::ApplyTransform);
+            if i.consume_key(Modifiers::NONE, Key::Enter) {
+                if pen {
+                    acts.push(Action::FinishPen);
+                } else if points {
+                    acts.push(Action::ExitPoints);
+                } else if transforming {
+                    acts.push(Action::ApplyTransform);
+                }
             }
             let step = if i.modifiers.shift { 10.0 } else { 1.0 };
             for (key, dir) in [
@@ -305,9 +350,29 @@ impl OpenMapperApp {
                     | Action::Delete
                     | Action::AddSurface(_)
                     | Action::AddCutout
+                    | Action::Pen
+                    | Action::EditPoints
             )
         {
             self.editor.apply_transform();
+        }
+        // Same for drawing and point editing.
+        if matches!(
+            action,
+            Action::NewDemo
+                | Action::NewEmpty
+                | Action::Open
+                | Action::Undo
+                | Action::Redo
+                | Action::SelectAll
+                | Action::Duplicate
+                | Action::Delete
+                | Action::AddSurface(_)
+                | Action::AddCutout
+                | Action::FreeTransform
+        ) {
+            self.editor.finish_pen();
+            self.editor.points = None;
         }
         match action {
             Action::NewDemo => self.guard(ctx, frame, Then::NewDemo),
@@ -383,7 +448,7 @@ impl OpenMapperApp {
                     other => other.label().to_string(),
                 };
                 let id = self.doc.project.add_source(name, kind);
-                self.editor.selected_source = Some(id);
+                self.editor.reveal_source(id);
             }
             Action::ImportMedia => {
                 let dialog = media_dialog(frame, "Import Images and Videos");
@@ -403,10 +468,62 @@ impl OpenMapperApp {
             }
             Action::ApplyTransform => self.editor.apply_transform(),
             Action::CancelTransform => self.editor.cancel_transform(&mut self.doc.project),
+            Action::Pen => {
+                if self.editor.pen.is_some() {
+                    self.editor.finish_pen();
+                } else {
+                    self.editor.points = None;
+                    self.editor.pen = Some(Vec::new());
+                }
+            }
+            Action::FinishPen => self.editor.finish_pen(),
+            Action::CancelPen => self.editor.pen = None,
+            Action::RemovePenPoint => {
+                if let Some(pen) = &mut self.editor.pen
+                    && pen.pop().is_none()
+                {
+                    self.editor.pen = None;
+                }
+            }
+            Action::EditPoints => {
+                let target = self.editor.selection.primary().and_then(|id| self.doc.project.surface_mut(id));
+                match target {
+                    Some(s) if !s.locked => {
+                        s.make_freeform();
+                        let id = s.id;
+                        self.editor.edit_points(id);
+                    }
+                    Some(_) => self.set_status("The surface is locked"),
+                    None => self.set_status("Select a surface to edit its points"),
+                }
+            }
+            Action::ExitPoints => self.editor.points = None,
+            Action::DeletePoint => {
+                if !self.editor.delete_point(&mut self.doc.project) {
+                    self.set_status("Select a point first. A shape keeps at least three points.");
+                }
+            }
+            Action::ToggleLibrary => self.library.open = !self.library.open,
+            Action::UsePreset { index, apply } => {
+                let Some(preset) = self.library.presets.get(index) else { return };
+                let (name, generator) = (preset.name, preset.generator.clone());
+                let id = self.doc.add_generator(name, generator);
+                self.editor.reveal_source(id);
+                if apply && !sel.is_empty() {
+                    self.doc.assign_source(&sel, Some(id));
+                    self.set_status(format!("\"{name}\" is on {} surface(s)", sel.len()));
+                } else {
+                    self.set_status(format!("Added \"{name}\" to Sources"));
+                }
+            }
         }
     }
 
     fn nudge(&mut self, delta: Vec2) {
+        if self.editor.points.is_some() {
+            self.editor.nudge_point(&mut self.doc.project, delta);
+            return;
+        }
         if self.editor.transform.is_some() {
             self.editor.nudge_transform(&mut self.doc.project, delta);
             return;
@@ -451,7 +568,7 @@ impl OpenMapperApp {
             last = Some(self.doc.project.add_source(name, kind));
         }
         if let Some(id) = last {
-            self.editor.selected_source = Some(id);
+            self.editor.reveal_source(id);
             if !self.editor.selection.surfaces.is_empty() {
                 let sel = self.editor.selection.surfaces.clone();
                 self.doc.assign_source(&sel, Some(id));
@@ -542,6 +659,8 @@ impl OpenMapperApp {
 
     fn replace_document(&mut self, doc: Document) {
         self.editor.transform = None;
+        self.editor.pen = None;
+        self.editor.points = None;
         self.doc = doc;
         self.editor.selection.clear();
         self.editor.selected_source = None;
@@ -606,6 +725,31 @@ impl OpenMapperApp {
         }
     }
 
+    /// Renders the shader library previews and returns their egui texture.
+    pub fn library_thumbnails(&mut self) -> egui::TextureId {
+        let generators: Vec<Generator> = self.library.presets.iter().map(|p| p.generator.clone()).collect();
+        self.renderer.render_thumbnails(&generators, self.library.clock.elapsed().as_secs_f64());
+        let generation = self.renderer.thumbnail_generation();
+        let view = &self.renderer.thumbnails().expect("rendered above").view;
+        let device = &self.render_state.device;
+        let mut egui_renderer = self.render_state.renderer.write();
+        let id = match self.library.texture {
+            Some((id, g)) if g == generation => return id,
+            Some((id, _)) => {
+                egui_renderer.update_egui_texture_from_wgpu_texture(
+                    device,
+                    view,
+                    wgpu::FilterMode::Linear,
+                    id,
+                );
+                id
+            }
+            None => egui_renderer.register_native_texture(device, view, wgpu::FilterMode::Linear),
+        };
+        self.library.texture = Some((id, generation));
+        id
+    }
+
     fn update_title(&mut self, ctx: &egui::Context) {
         let title =
             format!("{}{} — OpenMapper", self.doc.display_name(), if self.doc.dirty { " •" } else { "" });
@@ -667,6 +811,13 @@ impl eframe::App for OpenMapperApp {
         egui::CentralPanel::no_frame().show(ui, |ui| {
             self.editor.ui(ui, &mut self.doc.project, self.output_tex);
         });
+        if let Some(points) = self.editor.finished_pen.take() {
+            match self.doc.add_freeform(&points) {
+                Some(id) => self.editor.selection.set(vec![id]),
+                None => self.set_status("That shape is too small"),
+            }
+        }
+        panels::library_window(&ctx, self);
 
         self.output.show(&ctx, self.output_tex, &self.doc.project, &self.editor.selection);
 
